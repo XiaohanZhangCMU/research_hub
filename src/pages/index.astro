@@ -21,12 +21,10 @@ const recentPosts = (await getCollection('posts', ({ data }) => !data.draft))
         <div class="space-y-4 text-gray-600 leading-relaxed">
           <p>
             My name is Xiaohan Zhang. I grew up in Inner Mongolia, China, and have spent my career
-            moving between mechanics and artificial intelligence.
-          </p>
-          <p>
-            I'm especially interested in building computational systems that help us understand
-            complex worlds — from physical systems governed by partial differential equations to
-            the emerging behavior of large AI models.
+            moving between mechanics and artificial intelligence. This website is my public notebooks: 
+            a place for technical essays, research notes, derivations, implementation details, and 
+            half-formed ideas at the intersection of LLM training/post-training, numerical methods for 
+            stochastic processes, and scientific computing in general.
           </p>
           <p>
             I began my career as a computational mechanics researcher at Carnegie Mellon and then
@@ -40,12 +38,6 @@ const recentPosts = (await getCollection('posts', ({ data }) => !data.draft))
             time-series clustering and forecasting, then at Databricks/MosaicML as a research
             engineer working on LLM training infrastructure, and now at Baseten, where I work on
             post-training research.
-          </p>
-          <p>
-            This website is my public notebook: a place for technical essays, research notes,
-            derivations, implementation details, and half-formed ideas at the intersection of LLM
-            training/post-training, numerical methods for stochastic processes, and scientific
-            computing in general.
           </p>
         </div>
         <div class="flex gap-4 mt-6 text-sm text-gray-400">
