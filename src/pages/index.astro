@@ -11,17 +11,44 @@ const recentPosts = (await getCollection('posts', ({ data }) => !data.draft))
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Research engineering notes on AI systems, stochastic processes, and scientific computing." />
-    <title>Xiaohan Zhang</title>
+    <meta name="description" content="Technical essays, research notes, and half-formed ideas at the intersection of LLM training, numerical methods, and scientific computing." />
+    <title>Xiaohan and His Agents</title>
   </head>
   <body class="bg-white text-gray-900 font-sans antialiased">
     <main class="max-w-2xl mx-auto px-6 py-20">
       <div class="mb-16">
-        <h1 class="text-3xl font-bold tracking-tight mb-2">Xiaohan Zhang</h1>
-        <p class="text-gray-500 text-lg leading-relaxed">
-          Research Engineering Notes on AI Systems, Stochastic Processes, and Scientific Computing
-        </p>
-        <div class="flex gap-4 mt-4 text-sm text-gray-400">
+        <h1 class="text-3xl font-bold tracking-tight mb-6">Xiaohan and His Agents</h1>
+        <div class="space-y-4 text-gray-600 leading-relaxed">
+          <p>
+            My name is Xiaohan Zhang. I grew up in Inner Mongolia, China, and have spent my career
+            moving between mechanics and artificial intelligence.
+          </p>
+          <p>
+            I'm especially interested in building computational systems that help us understand
+            complex worlds — from physical systems governed by partial differential equations to
+            the emerging behavior of large AI models.
+          </p>
+          <p>
+            I began my career as a computational mechanics researcher at Carnegie Mellon and then
+            Stanford, working on hyperbolic PDE simulations, molecular dynamics, and numerical
+            methods for physical systems. At some point, I wanted to understand the universe! Then
+            realized that might be too ambitious. So I switched to machine learning in 2018, hoping
+            that perhaps I could build models that understand it instead.
+          </p>
+          <p>
+            Since 2018, I've worked across applied ML and AI systems: first at Salesforce on
+            time-series clustering and forecasting, then at Databricks/MosaicML as a research
+            engineer working on LLM training infrastructure, and now at Baseten, where I work on
+            post-training research.
+          </p>
+          <p>
+            This website is my public notebook: a place for technical essays, research notes,
+            derivations, implementation details, and half-formed ideas at the intersection of LLM
+            training/post-training, numerical methods for stochastic processes, and scientific
+            computing in general.
+          </p>
+        </div>
+        <div class="flex gap-4 mt-6 text-sm text-gray-400">
           <a href="/writing" class="hover:text-gray-700 transition-colors">Writing</a>
           <span>·</span>
           <a href="https://github.com/XiaohanZhangCMU" class="hover:text-gray-700 transition-colors">GitHub</a>
