@@ -1,6 +1,5 @@
 ---
 import '../styles/global.css';
-import 'katex/dist/katex.min.css';
 
 interface Props {
   title: string;
@@ -25,6 +24,7 @@ const formattedDate = date.toLocaleDateString('en-US', {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
     <title>{title} — Xiaohan Zhang</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" />
   </head>
   <body class="bg-white text-gray-900 font-sans antialiased">
     <header class="border-b border-gray-100 px-6 py-4">
