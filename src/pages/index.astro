@@ -1,15 +1,55 @@
 ---
+import { getCollection } from 'astro:content';
 import '../styles/global.css';
+
+const recentPosts = (await getCollection('posts', ({ data }) => !data.draft))
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf())
+  .slice(0, 3);
 ---
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>Hello World</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Research engineering notes on AI systems, stochastic processes, and scientific computing." />
+    <title>Xiaohan Zhang</title>
   </head>
-  <body class="bg-white text-gray-900 font-sans p-8">
-    <h1 class="text-3xl font-bold">Xiaohan Zhang</h1>
-    <p class="mt-2 text-gray-500">Research Engineering Notes on AI Systems, Stochastic Processes, and Scientific Computing</p>
+  <body class="bg-white text-gray-900 font-sans antialiased">
+    <main class="max-w-2xl mx-auto px-6 py-20">
+      <div class="mb-16">
+        <h1 class="text-3xl font-bold tracking-tight mb-2">Xiaohan Zhang</h1>
+        <p class="text-gray-500 text-lg leading-relaxed">
+          Research Engineering Notes on AI Systems, Stochastic Processes, and Scientific Computing
+        </p>
+        <div class="flex gap-4 mt-4 text-sm text-gray-400">
+          <a href="/writing" class="hover:text-gray-700 transition-colors">Writing</a>
+          <span>·</span>
+          <a href="https://github.com/XiaohanZhangCMU" class="hover:text-gray-700 transition-colors">GitHub</a>
+        </div>
+      </div>
+
+      {recentPosts.length > 0 && (
+        <section>
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-6">Recent</h2>
+          <div class="space-y-6">
+            {recentPosts.map(post => (
+              <a href={`/writing/${post.slug}`} class="group block">
+                <h3 class="font-medium group-hover:text-blue-600 transition-colors">
+                  {post.data.title}
+                </h3>
+                <p class="text-sm text-gray-500 mt-0.5 leading-relaxed">
+                  {post.data.description}
+                </p>
+              </a>
+            ))}
+          </div>
+          <div class="mt-8">
+            <a href="/writing" class="text-sm text-gray-400 hover:text-gray-700 transition-colors">
+              All posts →
+            </a>
+          </div>
+        </section>
+      )}
+    </main>
   </body>
 </html>

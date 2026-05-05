@@ -1,0 +1,204 @@
+---
+title: "Mathematical Foundations of Stochastic Differential Equations"
+description: "A rigorous but accessible introduction to Brownian motion, Itô calculus, and SDEs — the mathematical core behind diffusion models and stochastic optimization."
+date: 2026-05-05
+tags: ["sde", "stochastic-processes", "mathematics", "diffusion-models"]
+series: "sde-for-ml"
+draft: false
+generated: false
+reviewed: false
+---
+
+## Motivation
+
+Stochastic differential equations have become unavoidable in modern ML. Score-based generative models (DDPM, NCSN) are SDEs in disguise. The Langevin dynamics underlying MCMC samplers are SDEs. The continuous-time limits of SGD with noise are SDEs. Yet most ML practitioners reach for the tools without the foundations, and the foundations matter: the Itô correction term has a habit of biting you when you discretize incorrectly or interpret diffusion model outputs in the wrong measure.
+
+This note builds the core theory from scratch: filtered probability spaces, Brownian motion, the Itô integral, Itô's lemma, and the SDE formalism, ending with the connection to reverse-time diffusion.
+
+## Probability Setup
+
+An SDE lives on a **filtered probability space** $(\Omega, \mathcal{F}, \{\mathcal{F}_t\}_{t \geq 0}, \mathbb{P})$:
+
+- $\Omega$ is the sample space of all possible trajectories.
+- $\mathcal{F}$ is a $\sigma$-algebra of measurable events.
+- $\{\mathcal{F}_t\}$ is a **filtration**: an increasing family of sub-$\sigma$-algebras representing the information available up to time $t$.
+- $\mathbb{P}$ is the probability measure.
+
+A process $X_t$ is **adapted** to $\{\mathcal{F}_t\}$ if $X_t$ is $\mathcal{F}_t$-measurable for each $t$ — meaning the value of $X_t$ depends only on information up to time $t$. A process is a **martingale** if $\mathbb{E}[X_t \mid \mathcal{F}_s] = X_s$ for $s \leq t$.
+
+These conditions are not pedantry. Adaptedness prevents look-ahead bugs in discretization. The martingale property is what makes stochastic integrals well-defined.
+
+## Brownian Motion
+
+**Definition.** A stochastic process $W_t$ is a **standard Brownian motion** (Wiener process) if:
+
+1. $W_0 = 0$ almost surely.
+2. **Independent increments**: $W_t - W_s \perp \mathcal{F}_s$ for $s < t$.
+3. **Gaussian increments**: $W_t - W_s \sim \mathcal{N}(0,\, t - s)$ for $0 \leq s < t$.
+4. **Continuous paths**: $t \mapsto W_t$ is continuous almost surely.
+
+The property that drives everything is **quadratic variation**:
+
+$$[W, W]_t = \lim_{\|\Pi\| \to 0} \sum_{i} (W_{t_{i+1}} - W_{t_i})^2 = t$$
+
+For any differentiable function $f$, $[f, f]_t = 0$ — smooth functions have zero quadratic variation because increments are $O(\Delta t)$ and squared increments are $O(\Delta t^2)$, which vanishes. Brownian motion is different: increments are $O(\sqrt{\Delta t})$, so squared increments are $O(\Delta t)$, and they accumulate to $t$.
+
+This is why ordinary calculus fails for BM. In the Itô product-rule shorthand, we write:
+
+$$dW_t \cdot dW_t = dt, \qquad dW_t \cdot dt = 0, \qquad dt \cdot dt = 0$$
+
+## The Itô Integral
+
+We want to define $\int_0^t H_s \, dW_s$ for a stochastic integrand $H$. The Riemann-Stieltjes approach fails because $W$ has infinite total variation — $\int_0^T |dW_t| = \infty$ almost surely.
+
+The Itô integral is defined by approximating $H$ with simple (step-function) processes and evaluating at **left endpoints**:
+
+$$\int_0^t H_s \, dW_s := \lim_{n \to \infty} \sum_{i=0}^{n-1} H_{t_i} \bigl(W_{t_{i+1}} - W_{t_i}\bigr)$$
+
+where the limit is in $L^2(\mathbb{P})$ and $H$ must be adapted. The left-endpoint choice is not arbitrary — it ensures $H_{t_i}$ is independent of the future increment $W_{t_{i+1}} - W_{t_i}$, making the integral a martingale.
+
+**Itô isometry.** For square-integrable adapted $H$:
+
+$$\mathbb{E}\!\left[\left(\int_0^t H_s \, dW_s\right)^2\right] = \mathbb{E}\!\left[\int_0^t H_s^2 \, ds\right]$$
+
+This converts a hard problem (variance of a stochastic integral) into an easy one (integral of a variance). It is the central tool for all $L^2$ estimates.
+
+## Itô's Lemma
+
+Itô's lemma is the stochastic chain rule. Let $X_t$ satisfy:
+
+$$dX_t = \mu_t \, dt + \sigma_t \, dW_t$$
+
+and let $f(t, x) \in C^{1,2}$. Then:
+
+$$df(t, X_t) = \frac{\partial f}{\partial t} \, dt + \frac{\partial f}{\partial x} \, dX_t + \frac{1}{2} \frac{\partial^2 f}{\partial x^2} (dX_t)^2$$
+
+Substituting and using $(dW_t)^2 = dt$, $dW_t \, dt = 0$, $dt^2 = 0$:
+
+$$df(t, X_t) = \left(\frac{\partial f}{\partial t} + \mu_t \frac{\partial f}{\partial x} + \frac{1}{2}\sigma_t^2 \frac{\partial^2 f}{\partial x^2}\right) dt + \sigma_t \frac{\partial f}{\partial x} \, dW_t$$
+
+The $\frac{1}{2}\sigma^2 f_{xx}$ term — the **Itô correction** — is absent in ordinary calculus. It comes from the nonzero quadratic variation of BM. When $\sigma = 0$, we recover the ordinary chain rule.
+
+**Why the second-order term survives.** Taylor-expand $f$ to second order:
+
+$$\delta f \approx f_t \, dt + f_x \, dX_t + \tfrac{1}{2} f_{xx} (dX_t)^2 + \cdots$$
+
+The key is $(dX_t)^2 = \sigma_t^2 (dW_t)^2 + 2\mu_t \sigma_t \, dW_t \, dt + \mu_t^2 \, dt^2 = \sigma_t^2 \, dt$ at leading order. The second-order term is $O(dt)$, not $O(dt^2)$ as in ordinary calculus, so it does not vanish.
+
+## Stochastic Differential Equations
+
+A **stochastic differential equation** in Itô form is:
+
+$$dX_t = \mu(X_t, t) \, dt + \sigma(X_t, t) \, dW_t, \qquad X_0 = x_0$$
+
+This is shorthand for the integral equation:
+
+$$X_t = x_0 + \int_0^t \mu(X_s, s) \, ds + \int_0^t \sigma(X_s, s) \, dW_s$$
+
+The first integral is a Lebesgue integral; the second is an Itô integral.
+
+**Existence and uniqueness.** Under Lipschitz and linear growth conditions on $\mu$ and $\sigma$:
+
+$$|\mu(x,t) - \mu(y,t)| + |\sigma(x,t) - \sigma(y,t)| \leq K|x - y|$$
+
+there exists a unique strong solution that is adapted and pathwise continuous. This fails at $\sigma(x) = \sqrt{x}$ (the CIR process), which requires more careful treatment and can still be shown to have weak solutions.
+
+## Key Examples
+
+### Geometric Brownian Motion
+
+$$dS_t = \mu S_t \, dt + \sigma S_t \, dW_t, \qquad S_0 > 0$$
+
+Apply Itô's lemma with $f(x) = \ln x$, using $f_x = 1/x$ and $f_{xx} = -1/x^2$:
+
+$$d(\ln S_t) = \frac{1}{S_t} dS_t - \frac{1}{2S_t^2}(dS_t)^2 = \left(\mu - \frac{\sigma^2}{2}\right) dt + \sigma \, dW_t$$
+
+Integrating directly:
+
+$$S_t = S_0 \exp\!\left(\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W_t\right)$$
+
+The $-\sigma^2/2$ correction is the Itô term. Without it, $\mathbb{E}[e^{\sigma W_t}] = e^{\sigma^2 t/2}$ adds spurious drift. With it, $\mathbb{E}[S_t] = S_0 e^{\mu t}$ — the expected growth rate is exactly $\mu$ as intended.
+
+### Ornstein-Uhlenbeck Process
+
+$$dX_t = -\theta X_t \, dt + \sigma \, dW_t, \qquad \theta > 0$$
+
+This is linear and solvable exactly via the integrating factor $e^{\theta t}$. Applying Itô's lemma to $Y_t = e^{\theta t} X_t$:
+
+$$X_t = X_0 e^{-\theta t} + \sigma \int_0^t e^{-\theta(t-s)} \, dW_s$$
+
+The process is **mean-reverting**: it exponentially drifts toward 0 with rate $\theta$. The stationary distribution is $\mathcal{N}(0,\, \sigma^2 / 2\theta)$, verified by plugging into the Fokker-Planck equation. In discrete time, the OU process is the continuous-time limit of an AR(1) model.
+
+### Overdamped Langevin SDE
+
+$$dX_t = -\nabla U(X_t) \, dt + \sqrt{2\beta^{-1}} \, dW_t$$
+
+where $U : \mathbb{R}^d \to \mathbb{R}$ is a potential and $\beta > 0$ is inverse temperature.
+
+The stationary distribution is $p^*(x) \propto e^{-\beta U(x)}$. To see why: plug into Fokker-Planck and verify $\partial_t p = 0$. If $U(x) = -\log p(x)$, the Langevin SDE samples from $p$ — provided we can evaluate $\nabla \log p(x)$, the score function.
+
+## The Fokker-Planck Equation
+
+Individual trajectories are random, but the density $p(x,t)$ of $X_t$ evolves deterministically. For $dX = f(X,t) \, dt + g(X,t) \, dW$:
+
+$$\frac{\partial p}{\partial t} = -\frac{\partial}{\partial x}\bigl[f(x,t) \, p\bigr] + \frac{1}{2}\frac{\partial^2}{\partial x^2}\bigl[g(x,t)^2 \, p\bigr]$$
+
+In $d$ dimensions: $\partial_t p = -\nabla \cdot (fp) + \frac{1}{2} \Delta (g^2 p)$.
+
+The first term is advection (drift moves mass); the second is diffusion (noise spreads it). At stationarity ($\partial_t p = 0$), we recover the balance condition defining $p^*$. The Fokker-Planck equation is the bridge between the stochastic (path) view and the density view, and score matching lives entirely in the density view.
+
+## Connection to Diffusion Models
+
+Song et al. (2021) unified score-based models under the SDE framework. The **forward SDE** gradually corrupts data $x_0 \sim p_\text{data}$ to noise:
+
+$$dX_t = f(X_t, t) \, dt + g(t) \, dW_t$$
+
+The **VP-SDE** (variance-preserving) sets $f(x,t) = -\frac{1}{2}\beta(t) x$ and $g(t) = \sqrt{\beta(t)}$:
+
+$$dX_t = -\frac{1}{2}\beta(t) X_t \, dt + \sqrt{\beta(t)} \, dW_t$$
+
+DDPM is a discrete-time approximation of this SDE with a fixed noise schedule $\{\beta_t\}$.
+
+**Reverse-time SDE** (Anderson, 1982): Given the forward SDE, the time-reversal $\bar{X}_t = X_{T-t}$ satisfies:
+
+$$d\bar{X}_t = \Bigl[f(\bar{X}_t, T-t) - g(T-t)^2 \,\nabla_x \log p_{T-t}(\bar{X}_t)\Bigr] \, dt + g(T-t) \, d\bar{W}_t$$
+
+where $\bar{W}_t$ is a reverse-time Brownian motion. The score $\nabla_x \log p_t(x)$ is the unknown quantity learned by denoising score matching.
+
+The practical implication: **sampling from a diffusion model is numerical integration of an SDE.** Sampler quality (DDIM, DPM-Solver, etc.) is determined by numerical properties of the reverse SDE — step size, order of the integrator, and whether you are in the SDE or ODE (probability flow) formulation.
+
+## Numerical Discretization
+
+The **Euler-Maruyama** method is the simplest SDE discretizer, analogous to forward Euler for ODEs:
+
+$$X_{n+1} = X_n + \mu(X_n, t_n)\, \Delta t + \sigma(X_n, t_n)\, \sqrt{\Delta t}\; \xi_n, \qquad \xi_n \sim \mathcal{N}(0, 1)$$
+
+It has **strong order** $1/2$ (pathwise error) and **weak order** $1$ (error in expectations). For density estimation and diffusion model sampling, weak order is the relevant quantity.
+
+The **Milstein method** adds the Itô correction to achieve strong order $1$:
+
+$$X_{n+1} = X_n + \mu\, \Delta t + \sigma\, \sqrt{\Delta t}\; \xi_n + \frac{1}{2} \sigma \sigma'\, \Delta t\, (\xi_n^2 - 1)$$
+
+where $\sigma' = \partial \sigma / \partial x$. For additive noise ($\sigma$ constant), the correction vanishes and Milstein equals Euler-Maruyama.
+
+For the VP-SDE reverse process, each DDPM denoising step is Euler-Maruyama on the reverse SDE with a learned score substituted for $\nabla_x \log p_t$. The step size $\Delta t$ controls the compute-quality tradeoff.
+
+## Takeaways
+
+1. **The Itô correction $\frac{1}{2}\sigma^2 f_{xx}$ is not optional.** Missing it produces wrong drift estimates. The GBM example shows this concretely: the log-price drifts at $\mu - \sigma^2/2$, not $\mu$.
+
+2. **The Langevin SDE is a sampling algorithm.** Its stationary distribution is $p^* \propto e^{-U}$, and all you need is the score $\nabla \log p$. This is the engine beneath both MCMC and score-based generative models.
+
+3. **Diffusion models are SDE solvers with a learned drift.** Understanding SDE discretization explains why different samplers produce different samples at the same number of function evaluations.
+
+4. **The Fokker-Planck equation connects paths to densities.** Score matching lives in the density view. Trajectory simulation lives in the path view. Both perspectives are load-bearing.
+
+5. **Quadratic variation is the root cause of everything surprising.** $dW^2 = dt$ is the single identity that separates stochastic from ordinary calculus.
+
+## References
+
+- Øksendal, B. (2003). *Stochastic Differential Equations: An Introduction with Applications* (6th ed.). Springer.
+- Kloeden, P. E., & Platen, E. (1992). *Numerical Solution of Stochastic Differential Equations*. Springer.
+- Rogers, L. C. G., & Williams, D. (2000). *Diffusions, Markov Processes and Martingales* (Vol. 2). Cambridge University Press.
+- Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021). Score-based generative modeling through stochastic differential equations. *ICLR 2021*.
+- Anderson, B. D. O. (1982). Reverse-time diffusion equation models. *Stochastic Processes and their Applications*, 12(3), 313–326.

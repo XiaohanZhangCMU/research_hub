@@ -1,0 +1,63 @@
+---
+import '../styles/global.css';
+import 'katex/dist/katex.min.css';
+
+interface Props {
+  title: string;
+  description: string;
+  date: Date;
+  updated?: Date;
+  tags: string[];
+  series?: string;
+}
+
+const { title, description, date, tags } = Astro.props;
+const formattedDate = date.toLocaleDateString('en-US', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+});
+---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title} — Xiaohan Zhang</title>
+  </head>
+  <body class="bg-white text-gray-900 font-sans antialiased">
+    <header class="border-b border-gray-100 px-6 py-4">
+      <a href="/" class="text-sm text-gray-500 hover:text-gray-900 transition-colors">
+        ← Xiaohan Zhang
+      </a>
+    </header>
+    <main class="max-w-3xl mx-auto px-6 py-12">
+      <div class="mb-10">
+        <h1 class="text-3xl font-bold tracking-tight mb-3">{title}</h1>
+        <div class="flex flex-wrap items-center gap-3 text-sm text-gray-500">
+          <time datetime={date.toISOString()}>{formattedDate}</time>
+          <span class="text-gray-300">·</span>
+          <div class="flex flex-wrap gap-1.5">
+            {tags.map(tag => (
+              <span class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded text-xs font-mono">
+                {tag}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+      <article class="prose prose-gray max-w-none
+        prose-headings:font-semibold prose-headings:tracking-tight
+        prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline
+        prose-code:text-sm prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:font-mono
+        prose-pre:bg-gray-950 prose-pre:text-gray-100
+        prose-blockquote:border-gray-300">
+        <slot />
+      </article>
+    </main>
+    <footer class="border-t border-gray-100 px-6 py-8 mt-16 text-sm text-gray-400 max-w-3xl mx-auto">
+      <a href="/writing" class="hover:text-gray-600">← All posts</a>
+    </footer>
+  </body>
+</html>
