@@ -18,3 +18,40 @@ const { pageId, pageUrl, pageTitle } = Astro.props;
   ></div>
   <script async defer src="https://cusdis.com/js/cusdis.es.js"></script>
 </section>
+
+<!-- Restore form styles that Tailwind preflight resets -->
+<style is:global>
+  #cusdis_thread input,
+  #cusdis_thread textarea {
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    padding: 6px 10px;
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    background: white;
+  }
+  #cusdis_thread input:focus,
+  #cusdis_thread textarea:focus {
+    outline: 2px solid #6366f1;
+    outline-offset: 1px;
+    border-color: #6366f1;
+  }
+  #cusdis_thread textarea {
+    min-height: 100px;
+    resize: vertical;
+  }
+  #cusdis_thread button[type="submit"] {
+    background: #111827;
+    color: white;
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  #cusdis_thread button[type="submit"]:hover {
+    background: #374151;
+  }
+</style>
