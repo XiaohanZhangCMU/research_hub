@@ -1,0 +1,20 @@
+---
+interface Props {
+  pageId: string;
+  pageUrl: string;
+  pageTitle: string;
+}
+const { pageId, pageUrl, pageTitle } = Astro.props;
+---
+<section class="mt-16 pt-8 border-t border-gray-100">
+  <h2 class="text-sm font-semibold uppercase tracking-widest text-gray-400 mb-6">Comments</h2>
+  <div
+    id="cusdis_thread"
+    data-host="https://cusdis.com"
+    data-app-id="YOUR_CUSDIS_APP_ID"
+    data-page-id={pageId}
+    data-page-url={pageUrl}
+    data-page-title={pageTitle}
+  ></div>
+  <script async defer src="https://cusdis.com/js/cusdis.es.js"></script>
+</section>

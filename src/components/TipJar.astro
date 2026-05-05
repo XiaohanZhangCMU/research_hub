@@ -1,0 +1,19 @@
+---
+const tips = [
+  { label: '$1', url: 'YOUR_STRIPE_LINK_1' },
+  { label: '$5', url: 'YOUR_STRIPE_LINK_5' },
+  { label: '$10', url: 'YOUR_STRIPE_LINK_10' },
+];
+---
+<section class="mt-12 pt-8 border-t border-gray-100">
+  <p class="text-sm text-gray-500 mb-4">If this was useful, a small tip is appreciated ↓</p>
+  <div class="flex gap-3">
+    {tips.map(t => (
+      <a href={t.url} target="_blank" rel="noopener"
+         class="inline-block px-5 py-2 rounded-full border border-gray-200 text-sm font-medium
+                text-gray-700 hover:border-blue-400 hover:text-blue-600 transition-colors">
+        {t.label}
+      </a>
+    ))}
+  </div>
+</section>

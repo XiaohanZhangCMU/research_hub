@@ -1,5 +1,7 @@
 ---
 import '../styles/global.css';
+import TipJar from '../components/TipJar.astro';
+import Comments from '../components/Comments.astro';
 
 interface Props {
   title: string;
@@ -55,6 +57,12 @@ const formattedDate = date.toLocaleDateString('en-US', {
         prose-blockquote:border-gray-300">
         <slot />
       </article>
+      <TipJar />
+      <Comments
+        pageId={Astro.url.pathname}
+        pageUrl={Astro.url.href}
+        pageTitle={title}
+      />
     </main>
     <footer class="border-t border-gray-100 px-6 py-8 mt-16 text-sm text-gray-400 max-w-3xl mx-auto">
       <a href="/writing" class="hover:text-gray-600">← All posts</a>
