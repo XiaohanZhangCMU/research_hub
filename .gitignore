@@ -5,3 +5,5 @@ dist/
 *.swp
 package-lock.json
 .npmrc
+inbox/papers/*.pdf
+.claude/settings.local.json

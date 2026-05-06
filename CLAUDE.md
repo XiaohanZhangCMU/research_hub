@@ -108,6 +108,46 @@ series: "optional-series-slug"
 
 ---
 
+## Literature Review Inbox
+
+A separate flow from `inbox/drafts/`. Drop **academic papers** (`.pdf` or `.md`) into `inbox/papers/` and Claude absorbs each into a topic-based literature review post at `src/content/posts/lit-review-<topic>.mdx`. One paper can land in multiple reviews. New reviews start with foundational background (history, equations, general algorithms) when no existing topic fits.
+
+### State model
+**State lives in the review posts themselves**, not in a sidecar file. Every paper section embeds:
+```mdx
+### <Paper Title>
+<!-- paper-file: <filename> paper-hash: <12char-sha256> -->
+```
+- `paper-file` = stable identifier (matches `inbox/papers/` filename).
+- `paper-hash` = first 12 chars of `shasum -a 256`.
+- "Unprocessed" = a file in `inbox/papers/` whose hash isn't present in any `lit-review-*.mdx`. Self-healing, survives manual edits.
+- Re-saving a paper (different hash, same filename) replaces the existing section — no duplicates.
+
+### Review post conventions
+- File: `src/content/posts/lit-review-<topic-slug>.mdx`
+- Frontmatter: `title: "Literature Review: <Topic>"`, `series: "lit-review-<topic-slug>"`, `tags: ["literature-review", ...topic-tags]`, `generated: true`, `reviewed: false`
+- Body: `# H1` → `## Overview` (foundations) → `## Key Concepts` → `## Papers` (one `### Paper` subsection each, with the comment marker)
+
+### Three ways to run
+
+1. **On-demand:** `/update-reviews` in any Claude Code session in the repo root. Defined at `.claude/commands/update-reviews.md`.
+2. **Local event-driven daemon:** `./scripts/watch-inbox.sh`. Requires `brew install fswatch` once. Debounces 5s, single-flight via `flock`, runs `claude -p "/update-reviews"` on each batch. Foreground process; Ctrl-C to stop.
+3. **Cloud cron fallback:** A `schedule` skill routine runs `/update-reviews` every 30 min. Catches anything missed when the local daemon isn't running.
+
+### After processing
+Successful runs **auto-commit and push** to `main` → Vercel deploys in ~30s. Build success is the gate: if `npm run build` fails, edits are reverted via `git checkout -- src/content/posts/lit-review-*.mdx` and nothing is pushed.
+
+### Recovery
+- **Bad summarization went live?** `git revert <sha>` and push. The `reviewed: false` flag on each generated post marks it as "needs human pass" before final.
+- **Build keeps failing on a paper?** Move the paper out of `inbox/papers/` temporarily; the procedure ignores anything not in that folder.
+- **Local daemon and cron racing?** Second push fails non-fast-forward; the procedure retries once with `git pull --rebase`. If it still fails, abort and re-run manually.
+
+### Notes
+- PDFs are gitignored (`inbox/papers/*.pdf`); only the review posts are committed. Markdown papers in `inbox/papers/*.md` are tracked.
+- Pre-approved bash patterns in `.claude/settings.local.json` keep the non-interactive `claude -p` runs from stalling on permission prompts.
+
+---
+
 ## Key Services
 
 ### Comments — Cusdis
