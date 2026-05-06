@@ -9,6 +9,11 @@
 
 set -euo pipefail
 
+# Make the script self-contained regardless of which shell invokes it.
+# Adds the typical install dirs for `claude` and `node`/`npm` so the
+# `/update-reviews` build step also works.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WATCH_DIR="$REPO_ROOT/inbox/papers"
 LOCK_FILE="/tmp/research-hub-update-reviews.lock"
@@ -19,7 +24,8 @@ if ! command -v fswatch >/dev/null 2>&1; then
 fi
 
 if ! command -v claude >/dev/null 2>&1; then
-  echo "error: claude CLI not found in PATH." >&2
+  echo "error: claude CLI not found in PATH (looked in: $PATH)" >&2
+  echo "       install location detected previously: \$HOME/.local/bin/claude" >&2
   exit 1
 fi
 
