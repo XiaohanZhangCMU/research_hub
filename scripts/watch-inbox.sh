@@ -19,7 +19,13 @@ WATCH_DIR="$REPO_ROOT/inbox/papers"
 LOCK_FILE="/tmp/research-hub-update-reviews.lock"
 LOG_DIR="$REPO_ROOT/logs"
 LOG_FILE="$LOG_DIR/watch-inbox.log"
+PROMPT_FILE="$REPO_ROOT/.claude/commands/update-reviews.md"
 mkdir -p "$LOG_DIR"
+
+if [[ ! -f "$PROMPT_FILE" ]]; then
+  echo "error: $PROMPT_FILE not found." >&2
+  exit 1
+fi
 
 if ! command -v fswatch >/dev/null 2>&1; then
   echo "error: fswatch not installed. Run: brew install fswatch" >&2
@@ -54,10 +60,12 @@ run_update() {
     cd "$REPO_ROOT"
     echo ""
     echo "[watch] ===== $(date '+%Y-%m-%d %H:%M:%S') trigger ====="
-    if claude -p --verbose "/update-reviews"; then
+    # claude -p doesn't auto-load project slash commands, so we feed the
+    # procedure file as the prompt directly. The file is the source of truth.
+    if claude -p --verbose --permission-mode acceptEdits "$(cat "$PROMPT_FILE")"; then
       echo "[watch] $(date '+%H:%M:%S') run finished"
     else
-      echo "[watch] $(date '+%H:%M:%S') /update-reviews exited non-zero" >&2
+      echo "[watch] $(date '+%H:%M:%S') run exited non-zero" >&2
     fi
   ) 9>"$LOCK_FILE"
 }
