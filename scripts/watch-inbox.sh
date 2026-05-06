@@ -17,6 +17,9 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WATCH_DIR="$REPO_ROOT/inbox/papers"
 LOCK_FILE="/tmp/research-hub-update-reviews.lock"
+LOG_DIR="$REPO_ROOT/logs"
+LOG_FILE="$LOG_DIR/watch-inbox.log"
+mkdir -p "$LOG_DIR"
 
 if ! command -v fswatch >/dev/null 2>&1; then
   echo "error: fswatch not installed. Run: brew install fswatch" >&2
@@ -35,6 +38,10 @@ if [[ ! -d "$WATCH_DIR" ]]; then
 fi
 
 echo "Watching $WATCH_DIR — Ctrl-C to stop."
+echo "Logging to $LOG_FILE (tail -f to follow)."
+
+# Wrap stdout/stderr so EVERYTHING the script prints also lands in the log.
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 run_update() {
   # flock with -n: skip if another run is already in progress.
@@ -42,11 +49,12 @@ run_update() {
   (
     flock -n 9 || { echo "[watch] update already running; skipping this trigger."; exit 0; }
     cd "$REPO_ROOT"
-    echo "[watch] $(date +%H:%M:%S) running /update-reviews"
-    if claude -p "/update-reviews"; then
-      echo "[watch] $(date +%H:%M:%S) done"
+    echo ""
+    echo "[watch] ===== $(date '+%Y-%m-%d %H:%M:%S') trigger ====="
+    if claude -p --verbose "/update-reviews"; then
+      echo "[watch] $(date '+%H:%M:%S') run finished"
     else
-      echo "[watch] $(date +%H:%M:%S) /update-reviews exited non-zero" >&2
+      echo "[watch] $(date '+%H:%M:%S') /update-reviews exited non-zero" >&2
     fi
   ) 9>"$LOCK_FILE"
 }
