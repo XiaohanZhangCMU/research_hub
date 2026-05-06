@@ -1,0 +1,72 @@
+---
+title: "Literature Review: Distributed LLM Pre-training"
+description: "Communication-efficient and fault-tolerant distributed training systems for large language models."
+date: 2026-05-06
+updated: 2026-05-06
+tags: ["literature-review", "distributed-training", "systems", "diloco", "fault-tolerance"]
+series: "lit-review-distributed-training"
+draft: false
+generated: true
+reviewed: false
+---
+
+# Literature Review: Distributed LLM Pre-training
+
+## Overview
+
+Pre-training a frontier LLM means coordinating tens of thousands of accelerators for weeks. The dominant paradigm is **Single Program Multiple Data (SPMD)** with three composed parallelisms:
+
+- **Data parallelism (DP):** replicate the model, shard the batch, all-reduce gradients.
+- **Tensor parallelism (TP):** shard each layer's weights across devices, all-reduce activations within the layer.
+- **Pipeline parallelism (PP):** split layers across devices, pass activations between stages.
+
+Modern stacks (Megatron-LM, DeepSpeed, FSDP, MaxText, JAX/Pathways) compose all three plus sequence/context parallelism for long inputs. The standard data-parallel SGD step is
+
+$$
+g_t = \frac{1}{M}\sum_{m=1}^{M} g_t^{(m)},\qquad \theta_{t+1} = \theta_t - \eta\, g_t,
+$$
+
+where $g_t^{(m)}$ is the local gradient on learner $m$. The all-reduce that produces $g_t$ requires *every learner to be alive and synchronized at every step*. That's the bottleneck.
+
+Three pressures stress that bottleneck:
+
+1. **Bandwidth.** Inter-datacenter or even inter-rack bandwidth is far below intra-rack NVLink. Gradient all-reduces become the long pole.
+2. **Stragglers.** With $N$ accelerators, the slowest one paces the whole step. Failure rates that are tolerable at small $N$ become dominant at $N=10000$.
+3. **Hardware failures.** Pre-training runs span weeks; transient failures, GPU/HBM errors, network blips become routine, not exceptional.
+
+Recent research breaks the synchrony assumption:
+
+- **Local SGD / DiLoCo (Douillard et al., 2024).** Each learner runs $H$ inner SGD steps independently, then synchronizes by treating the parameter delta as a pseudo-gradient and applying an outer optimizer (typically SGD with Nesterov). Reduces communication frequency by $H\times$.
+- **Streaming DiLoCo (2025).** Partitions the model into fragments, each synchronizing on a staggered schedule. Reduces *peak* bandwidth in addition to total bandwidth, and admits step-level overlap of compute and communication.
+- **Asynchronous SGD revival.** With staleness bounds and bias correction, asynchronous updates can match synchronous quality at much higher goodput.
+- **Elastic / chaos-engineered training.** Treat failures as the norm; design the system to keep going through them rather than detect-and-restart.
+
+Framing all of this through the **CAP theorem** (Consistency, Availability, Partition tolerance) is illuminating: traditional SPMD picks consistency, sacrificing the other two. The frontier is moving toward AP systems for pre-training.
+
+## Key Concepts
+
+- **Goodput:** useful training tokens per wall-clock hour, accounting for downtime, restarts, and stragglers. The metric that actually matters at scale.
+- **Outer optimizer:** in DiLoCo, the optimizer that applies pseudo-gradients (parameter deltas from local training) at the global synchronization boundary.
+- **Quorum:** minimum number of learners required to commit a synchronization step. Smaller quorums tolerate more failures but can drift further.
+- **Chaos engineering:** Netflix-style fault injection adapted to ML training — kill learners mid-run, observe whether the system survives.
+- **Pathways:** Google's distributed-execution substrate that decouples logical computation from physical placement, enabling resilient asynchronous workflows.
+- **Slice-granular elasticity:** systems (e.g., Gemini's training stack) that resize the SPMD cluster on the fly to drop failed slices, but still incur cluster-wide stop-the-world overhead.
+
+## Papers
+
+### Decoupled DiLoCo for Resilient Distributed Pre-training
+{/* paper-file: 2604.21428v1.pdf paper-hash: 148f68931c3b */}
+**Authors:** Decoupled DiLoCo Team (Google DeepMind, Google Research)
+**Year:** 2026
+**Source:** `inbox/papers/2604.21428v1.pdf`
+
+**Contribution:** Evolves the DiLoCo framework from synchronous-but-infrequent to fully asynchronous. Decomposes a global cluster into independent learners that send fragment-level updates to a central synchronizer; the synchronizer aggregates with a minimum quorum, an adaptive grace window, and dynamic token-weighted merging. Achieves *strictly zero global downtime* under aggressive simulated failures while matching standard data-parallel quality on dense and MoE models across text and vision.
+
+**Key ideas:**
+- **CAP framing of pre-training.** SPMD chooses Consistency; Decoupled DiLoCo deliberately chooses Availability + Partition tolerance. This is the first time the trade-off is articulated cleanly for LLM pre-training.
+- **Central synchronizer, asynchronous learners.** Learners never block on peers — they post fragment deltas to the syncer and pull updated fragments when ready. Failure of one learner shrinks throughput by $1/M$; it does not stall the system.
+- **Minimum quorum + adaptive grace window.** The syncer commits a fragment update once enough learners have reported, but waits up to a tunable window to include slower-but-not-failed learners. Token-weighted merging accounts for divergent batch counts.
+- **Chaos-engineering validation.** Simulates millions of chips with continuous, aggressive failure injection. Throughput stays high; downstream model quality matches synchronous baselines.
+- **Generalizes across architectures.** Works for dense and MoE; works for both text and multimodal pretraining. Doesn't hinder downstream post-training.
+
+**Connections:** First paper in this review. Direct evolution of DiLoCo (Douillard et al., 2024) and Streaming DiLoCo (2025), which it cites as the synchronous predecessors. The CAP-style framing positions it against slice-granular elasticity (Gemini's approach) and the Pathways vision (Barham et al., 2022).

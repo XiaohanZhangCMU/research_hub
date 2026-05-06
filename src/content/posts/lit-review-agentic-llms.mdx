@@ -1,0 +1,89 @@
+---
+title: "Literature Review: Agentic LLMs"
+description: "LLMs as autonomous agents that plan, use tools, and act in real environments — trained primarily through reinforcement learning."
+date: 2026-05-06
+updated: 2026-05-06
+tags: ["literature-review", "agents", "rl", "tool-use", "search", "coding-agents"]
+series: "lit-review-agentic-llms"
+draft: false
+generated: true
+reviewed: false
+---
+
+# Literature Review: Agentic LLMs
+
+## Overview
+
+An *agentic* LLM is one that doesn't just answer; it acts. Given a goal and a toolbox — search engines, code interpreters, file editors, shell, browsers — the agent emits a sequence of actions, observes results, and iterates until the task is solved. This is a clean fit for the standard RL setup: the agent samples action $a_t \sim \pi_\theta(a_t \mid x, a_{1..t-1}, y_{1..t-1})$, the environment returns $y_t$, and a reward is delivered (often only at the end).
+
+The progression has been:
+
+1. **Prompt-engineered agents** (ReAct, Toolformer-style few-shot): the LLM is fixed; intelligence comes from scaffolding. Fragile, hand-tuned.
+2. **SFT'd agents:** train on demonstrations of successful trajectories. Better, but bottlenecked by demonstration quality and unable to discover new strategies.
+3. **RL-trained agents:** the current frontier. Reward the agent for end-task success and let it discover its own strategies — multi-step search, self-correction, tool composition.
+
+The action-conditioned policy gradient is
+
+$$
+\nabla_\theta J(\theta) = \mathbb{E}_\tau\!\left[\sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t \mid s_t)\, A_t\right],
+$$
+
+but the practical engineering matters more than the equation: rollout infrastructure, reward design, environment fidelity, off-policy correction, and mitigation of the well-known RL pathologies (reward hacking, credit assignment over very long horizons, mode collapse).
+
+Two domains dominate current agentic-RL research:
+
+- **Agentic search / RAG.** Replace single-shot retrieve-then-read with a multi-turn agent that issues queries, evaluates results, refines, and synthesizes. RL trains *when* to retrieve, *what* to retrieve, and *how* to integrate.
+- **Coding agents.** SWE-bench, Terminal-Bench, internal codebase tasks. Long horizons (10–100+ tool calls), partial credit hard to define, ground-truth correctness available via test execution. Composer 2, Claude Code, Cursor, Devin all live here.
+
+Common training-system patterns:
+
+- **Train-test parity:** train inside the *same* harness used at deploy time (same tools, same prompts, same scaffolding). Train-test mismatch is the silent killer of agent quality.
+- **Asynchronous rollouts** (because trajectories are long and variable-length), with off-policy importance correction.
+- **Group-relative advantages** (GRPO-style) to avoid the value-function headache.
+- **Verifiable rewards** wherever possible — unit tests, exact match, oracle simulators — so reward hacking has nowhere to go.
+
+## Key Concepts
+
+- **Search agent:** an LLM that plans and executes multi-turn retrieval against a search engine or knowledge base, refining queries based on intermediate observations.
+- **Agentic RAG:** the broader pattern — retrieval embedded as one tool among many in an agent loop.
+- **CursorBench, SWE-bench, Terminal-Bench:** coding-agent evaluation suites of varying realism, from synthetic Python to full repository tasks.
+- **Outcome-only reward:** end-of-trajectory pass/fail, no shaped intermediate signal. Standard for code (does the test pass?), forces the agent to learn long-horizon credit assignment.
+- **Harness:** the orchestration layer (tool definitions, prompt format, context management) wrapping the underlying LLM. The harness is part of the agent.
+- **Continued pretraining → SFT → RL:** the now-standard three-stage recipe for domain-specialized agents.
+
+## Papers
+
+### A Comprehensive Survey on Reinforcement Learning-based Agentic Search
+{/* paper-file: 2510.16724v2.pdf paper-hash: ea1ac38a19ad */}
+**Authors:** Minhua Lin, Zongyu Wu, Zhichao Xu, Hui Liu, Xianfeng Tang, Qi He, Charu Aggarwal, Hui Liu, Xiang Zhang, Suhang Wang (Penn State, Utah, Amazon, Microsoft, IBM, Michigan State)
+**Year:** 2025
+**Source:** `inbox/papers/2510.16724v2.pdf`
+
+**Contribution:** First systematic survey of RL-based agentic search — LLMs trained via RL to plan, retrieve, reflect, and reason across multi-step interactions with search environments. Organizes the field along three axes: *what* RL is for (functional roles), *how* RL is used (optimization strategies), and *where* RL is applied (scope: agent / step / module level). Argues RL is what turns prompt-engineered RAG pipelines into genuinely autonomous information-seeking agents.
+
+**Key ideas:**
+- **Three-axis taxonomy** as the survey's organizing spine: functional role × optimization strategy × scope of intervention. Most prior agentic-search work mixes all three; separating them clarifies design choices.
+- **Limits of static RAG:** single-turn retrieval, no adaptive query refinement, vulnerable to noisy retrievals. Iterative-RAG patches but doesn't fix.
+- **Three properties RL unlocks:** *autonomy* (agent picks its actions), *learning* (strategies emerge from reward, not handcrafting), *interaction* (multi-turn refinement against the search env).
+- **Reward design is the bottleneck.** Outcome-only rewards underspecify search behavior; process rewards are expensive to label; verifier-based rewards are the active research front.
+- **Distinguishes from adjacent surveys:** prior work covered agentic RAG, RAG reasoning, or general search agents — this is the first to put RL foundations at the center.
+
+**Connections:** First paper in this review. Provides the conceptual scaffolding the Composer 2 paper inhabits in practice — Composer 2 is, in this taxonomy, an RL-trained coding agent operating at *agent-level* scope with *outcome-based* rewards in a development environment rather than a search engine.
+
+### Composer 2 Technical Report
+{/* paper-file: 2603.24477v2.pdf paper-hash: 933e9f272096 */}
+**Authors:** Cursor Research Team
+**Year:** 2026
+**Source:** `inbox/papers/2603.24477v2.pdf`
+
+**Contribution:** Technical report for Composer 2, a coding-specialized agentic LLM trained via continued pretraining + large-scale RL on top of Kimi K2.5 (1.04T MoE / 32B active). Achieves frontier-level performance on Terminal-Bench (61.7) and SWE-bench Multilingual (73.7) while being cheaper to serve than general-purpose frontier APIs. Demonstrates a reproducible recipe for training domain-specialized agents.
+
+**Key ideas:**
+- **Train-test parity as a first principle.** RL happens inside the same Cursor harness used at inference — same tools, same prompt structure, same context management. Closes the dominant source of agent regressions.
+- **Three-phase continued pretraining:** bulk training at 32k context, long-context extension to 256k, then targeted-task SFT. Codebase perplexity is shown to be predictive of downstream RL reward.
+- **Realistic task distribution.** RL training tasks span debugging, refactor, new feature, code review, devops, migration, deletion — not just bug-fix-from-issue (the SWE-bench shape). Captures real software work.
+- **MTP layers for inference speed.** Multi-token-prediction heads trained via self-distillation on a mid-pretraining checkpoint, then jointly with the final phases. Used with speculative decoding at deploy time.
+- **MXFP8 training on B300s** with AdamW; large-scale asynchronous RL pipeline.
+- Specialization wins on cost: a 32B-active MoE specialist competes with state-of-the-art general models at lower serving cost.
+
+**Connections:** Concrete instantiation of the RL-trained agent paradigm surveyed by Lin et al. — same building blocks (multi-step tool use, outcome rewards, multi-turn rollout) applied to coding instead of search. Composer 2 is also the kind of system whose post-training pipeline the *LLM Fine-Tuning* review's ES results challenge: would ES fine-tuning of a coding agent's policy avoid the reward hacking and instability that asynchronous RL pipelines have to engineer around?

@@ -1,0 +1,74 @@
+---
+title: "Literature Review: LLM Architectures"
+description: "Architectural innovations in modern large language models — sparsity, attention efficiency, and long-context scaling."
+date: 2026-05-06
+updated: 2026-05-06
+tags: ["literature-review", "architecture", "moe", "long-context", "attention"]
+series: "lit-review-llm-architectures"
+draft: false
+generated: true
+reviewed: false
+---
+
+# Literature Review: LLM Architectures
+
+## Overview
+
+The transformer block has been remarkably stable since 2017, but the components inside it have churned constantly. Modern frontier LLMs differ from GPT-3 in nearly every load-bearing piece: attention variant, FFN structure, normalization, positional encoding, and parameter sharing.
+
+The standard self-attention computes
+
+$$
+\mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right) V,
+$$
+
+with $O(n^2)$ time and $O(n^2)$ memory in sequence length $n$. At million-token contexts, both terms become catastrophic, especially for the **KV cache** — the key/value tensors that must be retained across decoding steps. KV cache size scales as $O(n \cdot L \cdot d_k \cdot h)$ for $L$ layers and $h$ heads; at 1M tokens it dwarfs the model weights themselves.
+
+The architectural response has unfolded along several axes:
+
+**1. Sparse experts (MoE).** Replace the FFN with $E$ experts and a router that picks $k \ll E$ per token. Total parameters scale up while *active* parameters per token stay bounded. DeepSeek-MoE, Mixtral, Qwen-MoE, GLaM, Switch Transformer. The challenge is balanced routing (load balance loss, expert capacity) and fast all-to-all communication.
+
+**2. Attention compression.**
+- **Multi-Query / Grouped-Query Attention (MQA/GQA):** share K/V heads across multiple query heads; shrinks KV cache by $h_q/h_{kv}$.
+- **Multi-head Latent Attention (MLA, DeepSeek-V2/V3):** project K/V into a low-rank latent, reconstruct on read; shrinks KV cache far more aggressively while preserving expressivity.
+- **Sparse / sliding-window / dilated attention:** make the attention pattern itself sparse so $n^2$ becomes $n \log n$ or $n \cdot w$.
+- **Linear attention / state-space models:** replace softmax attention with a kernel that admits recurrent computation. Mamba, RWKV, RetNet.
+
+**3. Residual / connectivity tweaks.**
+- **Hyper-Connections** generalize residuals into a learned mixing graph across layers, improving gradient flow and capacity utilization.
+- **Manifold constraints** keep the residual stream's geometry well-conditioned across layers.
+
+**4. Optimizer co-design.** Architecture and optimizer are increasingly co-designed. Muon (a matrix-aware optimizer using Newton-Schulz orthogonalization) outperforms AdamW on transformer training and changes which architectural choices are stable at scale.
+
+**5. Quantization-native training.** FP8 has become standard; FP4 is now plausible mid-training, not just post-hoc — see DeepSeek-V4's FP4 QAT pipeline. This blurs the line between architecture and numerics.
+
+The frontier is increasingly defined less by raw parameter count and more by **active params × tokens × context length** at fixed hardware budget.
+
+## Key Concepts
+
+- **Active vs total parameters:** for MoE, the parameters used per token (active) versus the parameters in the model (total). DeepSeek-V4-Pro has 1.6T total / 49B active.
+- **MLA (Multi-head Latent Attention):** DeepSeek's KV-cache compression scheme using a low-rank latent for K/V.
+- **CSA / HCA:** Compressed Sparse Attention and Heavily Compressed Attention; DeepSeek-V4's two-tier attention hybrid that trades fidelity for cache size at long context.
+- **Hyper-Connections:** generalization of residual connections into a learnable per-layer mixing structure across the residual stream.
+- **Muon optimizer:** matrix-aware optimizer using approximate orthogonalization of update matrices; faster convergence and more stable training than AdamW for transformers.
+- **Single-token FLOPs:** the inference FLOPs to generate one token at a given context length — the metric that determines per-query cost.
+
+## Papers
+
+### DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence
+{/* paper-file: DeepSeek_V4.pdf paper-hash: f4cbe4fcbd28 */}
+**Authors:** DeepSeek-AI
+**Year:** 2026
+**Source:** `inbox/papers/DeepSeek_V4.pdf`
+
+**Contribution:** Preview release of the DeepSeek-V4 series: a 1.6T-total / 49B-active "Pro" model and a 284B-total / 13B-active "Flash" model, both with native one-million-token context. Combines a hybrid CSA + HCA attention architecture, Manifold-Constrained Hyper-Connections, and the Muon optimizer to reach state-of-the-art on knowledge, reasoning, and agentic benchmarks while using 27% of single-token inference FLOPs and 10% of the KV cache compared to DeepSeek-V3.2 at 1M context.
+
+**Key ideas:**
+- **Hybrid two-tier attention.** Compressed Sparse Attention (CSA) handles the bulk of context with sparsity-aware kernels; Heavily Compressed Attention (HCA) further shrinks long-range KV state. Together they yield 3.7× lower per-token FLOPs and 9.5–13.7× smaller KV cache vs V3.2 at 1M tokens.
+- **Manifold-Constrained Hyper-Connections (mHC).** Generalizes residual connections with a manifold constraint that keeps the residual-stream geometry well-conditioned, improving training stability at extreme depth and context.
+- **Muon optimizer.** Replaces AdamW for the main pre-training run, yielding faster convergence and more stable training; the paper documents efficient implementation details (Section 3.5.1).
+- **FP4 Quantization-Aware Training in the pre-training loop.** Not a post-hoc compression step — FP4 numerics are integrated into training and post-training infrastructure (Sections 3.4, 5.2.1). Shows that aggressive quantization is now native, not bolted on.
+- **Million-token context as a routine capability.** Long-context post-training pipeline (specialist training + on-policy distillation), context-parallel attention, and on-disk KV cache storage make 1M tokens economically viable rather than a benchmark stunt.
+- **Comprehensive post-training pipeline.** Specialist training and on-policy distillation feed a fault-tolerant, preemptible RL rollout system; agentic-AI sandbox infrastructure for tool-use training.
+
+**Connections:** First paper in this review. Sits at the intersection of several other reviews in this hub: its FP4 QAT integration links to the *LLM Quantization* review (LLM-QAT, EfficientQAT pioneered the QAT-for-LLMs recipe DeepSeek-V4 now bakes into pre-training); its agentic-AI sandbox and on-policy distillation pipeline link to the *Agentic LLMs* review; and the scale of its training infrastructure motivates the *Distributed Training* review (Decoupled DiLoCo's resilience story is exactly the kind of thing a 32T-token MoE pre-training run needs).
