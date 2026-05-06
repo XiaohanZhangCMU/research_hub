@@ -43,6 +43,9 @@ echo "Logging to $LOG_FILE (tail -f to follow)."
 # Wrap stdout/stderr so EVERYTHING the script prints also lands in the log.
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# Force-disable Python's stdout buffering and similar — we want output live.
+export PYTHONUNBUFFERED=1
+
 run_update() {
   # flock with -n: skip if another run is already in progress.
   # The trailing `9>` opens fd 9 on the lock file for this subshell.
@@ -58,6 +61,12 @@ run_update() {
     fi
   ) 9>"$LOCK_FILE"
 }
+
+# Initial scan: absorb anything already sitting in the inbox.
+# fswatch only fires on CHANGES, so without this step, files that existed
+# before the daemon started would never get processed.
+echo "[watch] $(date '+%H:%M:%S') initial scan"
+run_update
 
 # fswatch -o emits one line per batch of events.
 # --latency 5 debounces bursts (file copies, editor saves) into a single trigger.
