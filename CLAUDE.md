@@ -1,6 +1,6 @@
 # CLAUDE.md — Research Hub
 
-This file is read automatically by Claude Code at session start. It contains everything needed to work on this repo without prior context.
+This file is read automatically by Claude Code or Codex at session start. It contains everything needed to work on this repo without prior context.
 
 ---
 
