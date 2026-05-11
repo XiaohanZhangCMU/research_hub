@@ -114,23 +114,28 @@ series: "optional-series-slug"
 
 ## Literature Review Inbox
 
-A separate flow from `inbox/drafts/`. Drop **academic papers** (`.pdf` or `.md`) into `inbox/papers/` and Claude absorbs each into a topic-based literature review post at `src/content/posts/lit-review-<topic>.mdx`. One paper can land in multiple reviews. New reviews start with foundational background (history, equations, general algorithms) when no existing topic fits.
+A separate flow from `inbox/drafts/`. Drop **academic papers** (`.pdf` or `.md`) into `inbox/papers/` and agents absorb each into a topic-based literature review post at `src/content/posts/lit-review-<topic>.mdx`.
+
+Use the project skill `.claude/skills/literature-review-blog/SKILL.md` for this work. It is an Agent Skills-format skill, so Claude Code can discover it from `.claude/skills/`; Codex agents should read and follow the same `SKILL.md` when updating literature reviews.
+
+The standard is an integrated review article, not a paper-by-paper summary. Each update should re-evaluate the review's structure, merge the new paper into the field narrative, include mathematical and algorithmic details, and maintain `## References` as the bibliography/knowledge graph.
 
 ### State model
-**State lives in the review posts themselves**, not in a sidecar file. Every paper section embeds:
+**State lives in the review posts themselves**, not in a sidecar file. Every processed paper's reference entry embeds:
 ```mdx
-### <Paper Title>
-<!-- paper-file: <filename> paper-hash: <12char-sha256> -->
+- <Authors>. "<Title>." <Venue or arXiv>, <Year>.
+  {/* paper-file: <filename> paper-hash: <12char-sha256> */}
 ```
 - `paper-file` = stable identifier (matches `inbox/papers/` filename).
 - `paper-hash` = first 12 chars of `shasum -a 256`.
 - "Unprocessed" = a file in `inbox/papers/` whose hash isn't present in any `lit-review-*.mdx`. Self-healing, survives manual edits.
-- Re-saving a paper (different hash, same filename) replaces the existing section — no duplicates.
+- Re-saving a paper (different hash, same filename) means re-integrate the revised paper and update the existing reference marker, with no duplicate entries.
 
 ### Review post conventions
 - File: `src/content/posts/lit-review-<topic-slug>.mdx`
 - Frontmatter: `title: "Literature Review: <Topic>"`, `series: "lit-review-<topic-slug>"`, `tags: ["literature-review", ...topic-tags]`, `generated: true`, `reviewed: false`
-- Body: `# H1` → `## Overview` (foundations) → `## Key Concepts` → `## Papers` (one `### Paper` subsection each, with the comment marker)
+- Body should be organized around the field, not around papers. Typical sections: `## Overview`, `## Conceptual Map`, `## Mathematical Setup`, `## Algorithms and Design Patterns`, `## Empirical Picture`, `## Open Problems`, `## References`.
+- Existing `## Papers` / `### Paper` posts are legacy source notes. When touching one, progressively rewrite it into the integrated structure and move markers into `## References`.
 
 ### Three ways to run
 
@@ -139,7 +144,7 @@ A separate flow from `inbox/drafts/`. Drop **academic papers** (`.pdf` or `.md`)
 3. **Cloud cron fallback:** A `schedule` skill routine runs `/update-reviews` every 30 min. Catches anything missed when the local daemon isn't running.
 
 ### After processing
-Successful runs **auto-commit and push** to `main` → Vercel deploys in ~30s. Build success is the gate: if `npm run build` fails, edits are reverted via `git checkout -- src/content/posts/lit-review-*.mdx` and nothing is pushed.
+Successful runs **auto-commit and push** to `main` → Vercel deploys in ~30s. Build success is the gate: if `npm run build` fails, review edits are reverted and nothing is pushed.
 
 ### Recovery
 - **Bad summarization went live?** `git revert <sha>` and push. The `reviewed: false` flag on each generated post marks it as "needs human pass" before final.
@@ -195,12 +200,15 @@ shasum -a 256 /path/to/paper.pdf
 ```
 2. Copy the PDF into `inbox/papers/<filename>.pdf`. PDFs are gitignored, but the source path in the post should still point there.
 3. Pick the best existing `src/content/posts/lit-review-*.mdx` topic, or create a new topic if none fits.
-4. Add a `### <Paper Title>` subsection under `## Papers` with:
+4. Read `.claude/skills/literature-review-blog/SKILL.md`; for substantive rewrites, also read `.claude/skills/literature-review-blog/references/review-style.md`.
+5. Rewrite the target review around concepts, algorithms, math, evidence, and open problems. Merge the paper's ideas into the body instead of appending a paper summary.
+6. Add the processed paper to `## References` with:
 ```mdx
-{/* paper-file: <filename>.pdf paper-hash: <first-12-sha256> */}
+- <Authors>. "<Title>." <Venue or arXiv>, <Year>.
+  {/* paper-file: <filename>.pdf paper-hash: <first-12-sha256> */}
 ```
-5. Include `Authors`, `Year`, `Source`, `Contribution`, `Key ideas`, and `Connections` in the existing style.
-6. Update the post's `updated:` date and run the build command above.
+7. Add important papers cited by the new paper to `## References` too; unprocessed cited works do not get `paper-file` markers.
+8. Update the post's `updated:` date and run the build command above.
 
 ### Check if a change is live
 ```bash

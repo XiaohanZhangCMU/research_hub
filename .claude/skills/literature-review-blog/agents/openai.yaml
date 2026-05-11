@@ -1,0 +1,7 @@
+interface:
+  display_name: "Literature Review Blog"
+  short_description: "Integrated research-review blog updates"
+  default_prompt: "Use $literature-review-blog to absorb new papers into integrated literature review blog posts."
+
+policy:
+  allow_implicit_invocation: true
