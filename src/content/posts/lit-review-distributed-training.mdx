@@ -2,7 +2,7 @@
 title: "Literature Review: Distributed LLM Pre-training"
 description: "Communication-efficient and fault-tolerant distributed training systems for large language models."
 date: 2026-05-06
-updated: 2026-05-06
+updated: 2026-05-11
 tags: ["literature-review", "distributed-training", "systems", "diloco", "fault-tolerance"]
 series: "lit-review-distributed-training"
 draft: false
@@ -14,59 +14,95 @@ reviewed: false
 
 ## Overview
 
-Pre-training a frontier LLM means coordinating tens of thousands of accelerators for weeks. The dominant paradigm is **Single Program Multiple Data (SPMD)** with three composed parallelisms:
+Distributed LLM pre-training is a systems problem wrapped around an optimization problem. The optimizer wants a clean sequence of minibatch updates; the hardware supplies a failure-prone, bandwidth-limited, geographically constrained cluster. At frontier scale, the question is no longer just "how do we parallelize one step?" It is "how do we keep useful tokens flowing when links are slow, devices fail, and synchrony turns every straggler into a global stall?"
 
-- **Data parallelism (DP):** replicate the model, shard the batch, all-reduce gradients.
-- **Tensor parallelism (TP):** shard each layer's weights across devices, all-reduce activations within the layer.
-- **Pipeline parallelism (PP):** split layers across devices, pass activations between stages.
-
-Modern stacks (Megatron-LM, DeepSpeed, FSDP, MaxText, JAX/Pathways) compose all three plus sequence/context parallelism for long inputs. The standard data-parallel SGD step is
+Standard data-parallel SGD averages gradients across $M$ learners:
 
 $$
-g_t = \frac{1}{M}\sum_{m=1}^{M} g_t^{(m)},\qquad \theta_{t+1} = \theta_t - \eta\, g_t,
+g_t = \frac{1}{M}\sum_{m=1}^{M} g_t^{(m)}, \qquad
+\theta_{t+1} = \theta_t - \eta g_t.
 $$
 
-where $g_t^{(m)}$ is the local gradient on learner $m$. The all-reduce that produces $g_t$ requires *every learner to be alive and synchronized at every step*. That's the bottleneck.
+This assumes every learner reaches step $t$ and participates in the all-reduce. Tensor parallelism, pipeline parallelism, sequence parallelism, and expert parallelism solve different memory and compute partitioning problems, but most production pre-training stacks still depend on frequent synchronization somewhere in the training loop.
 
-Three pressures stress that bottleneck:
+The recent DiLoCo line of work attacks that assumption. Instead of synchronizing every step, each learner runs local training and periodically communicates parameter deltas. Decoupled DiLoCo pushes further: learners are independent, synchronization happens asynchronously at model-fragment granularity, and the system chooses availability and partition tolerance over strict per-step consistency.
 
-1. **Bandwidth.** Inter-datacenter or even inter-rack bandwidth is far below intra-rack NVLink. Gradient all-reduces become the long pole.
-2. **Stragglers.** With $N$ accelerators, the slowest one paces the whole step. Failure rates that are tolerable at small $N$ become dominant at $N=10000$.
-3. **Hardware failures.** Pre-training runs span weeks; transient failures, GPU/HBM errors, network blips become routine, not exceptional.
+## Conceptual Map
 
-Recent research breaks the synchrony assumption:
+- **Classic SPMD training:** model shards and data-parallel replicas execute a globally synchronized program. It maximizes consistency but makes global progress depend on the slowest participant.
+- **Local SGD / DiLoCo:** learners run $H$ local steps before synchronizing. This reduces total communication by roughly $H\times$ but still has synchronization boundaries.
+- **Streaming / fragment-level DiLoCo:** different parameter fragments synchronize on staggered schedules, reducing peak bandwidth and allowing communication to overlap with compute.
+- **Asynchronous resilient training:** learners report updates when available; a synchronizer commits with quorums, grace windows, and token-weighted aggregation.
+- **Elastic recovery:** systems can drop or replace failed slices, but if the global program must stop to resize, downtime remains coupled to failure frequency.
 
-- **Local SGD / DiLoCo (Douillard et al., 2024).** Each learner runs $H$ inner SGD steps independently, then synchronizes by treating the parameter delta as a pseudo-gradient and applying an outer optimizer (typically SGD with Nesterov). Reduces communication frequency by $H\times$.
-- **Streaming DiLoCo (2025).** Partitions the model into fragments, each synchronizing on a staggered schedule. Reduces *peak* bandwidth in addition to total bandwidth, and admits step-level overlap of compute and communication.
-- **Asynchronous SGD revival.** With staleness bounds and bias correction, asynchronous updates can match synchronous quality at much higher goodput.
-- **Elastic / chaos-engineered training.** Treat failures as the norm; design the system to keep going through them rather than detect-and-restart.
+The central tradeoff is the distributed-systems CAP tradeoff translated into training. Synchronous SPMD chooses consistency: every learner agrees on every step. Decoupled DiLoCo chooses availability and partition tolerance: a failed learner reduces throughput but does not stop the run.
 
-Framing all of this through the **CAP theorem** (Consistency, Availability, Partition tolerance) is illuminating: traditional SPMD picks consistency, sacrificing the other two. The frontier is moving toward AP systems for pre-training.
+## Mathematical Setup
 
-## Key Concepts
+In local SGD, learner $m$ starts from shared parameters $\theta_r$ at outer round $r$ and performs $H$ inner updates:
 
-- **Goodput:** useful training tokens per wall-clock hour, accounting for downtime, restarts, and stragglers. The metric that actually matters at scale.
-- **Outer optimizer:** in DiLoCo, the optimizer that applies pseudo-gradients (parameter deltas from local training) at the global synchronization boundary.
-- **Quorum:** minimum number of learners required to commit a synchronization step. Smaller quorums tolerate more failures but can drift further.
-- **Chaos engineering:** Netflix-style fault injection adapted to ML training — kill learners mid-run, observe whether the system survives.
-- **Pathways:** Google's distributed-execution substrate that decouples logical computation from physical placement, enabling resilient asynchronous workflows.
-- **Slice-granular elasticity:** systems (e.g., Gemini's training stack) that resize the SPMD cluster on the fly to drop failed slices, but still incur cluster-wide stop-the-world overhead.
+$$
+\theta_{r,h+1}^{(m)} = \theta_{r,h}^{(m)} - \eta \nabla \ell(\theta_{r,h}^{(m)}; B_{r,h}^{(m)}),
+\qquad h=0,\ldots,H-1.
+$$
 
-## Papers
+The learner then sends a pseudo-gradient or delta
 
-### Decoupled DiLoCo for Resilient Distributed Pre-training
-{/* paper-file: 2604.21428v1.pdf paper-hash: 148f68931c3b */}
-**Authors:** Decoupled DiLoCo Team (Google DeepMind, Google Research)
-**Year:** 2026
-**Source:** `inbox/papers/2604.21428v1.pdf`
+$$
+\Delta_r^{(m)} = \theta_r - \theta_{r,H}^{(m)}.
+$$
 
-**Contribution:** Evolves the DiLoCo framework from synchronous-but-infrequent to fully asynchronous. Decomposes a global cluster into independent learners that send fragment-level updates to a central synchronizer; the synchronizer aggregates with a minimum quorum, an adaptive grace window, and dynamic token-weighted merging. Achieves *strictly zero global downtime* under aggressive simulated failures while matching standard data-parallel quality on dense and MoE models across text and vision.
+An outer optimizer aggregates deltas:
 
-**Key ideas:**
-- **CAP framing of pre-training.** SPMD chooses Consistency; Decoupled DiLoCo deliberately chooses Availability + Partition tolerance. This is the first time the trade-off is articulated cleanly for LLM pre-training.
-- **Central synchronizer, asynchronous learners.** Learners never block on peers — they post fragment deltas to the syncer and pull updated fragments when ready. Failure of one learner shrinks throughput by $1/M$; it does not stall the system.
-- **Minimum quorum + adaptive grace window.** The syncer commits a fragment update once enough learners have reported, but waits up to a tunable window to include slower-but-not-failed learners. Token-weighted merging accounts for divergent batch counts.
-- **Chaos-engineering validation.** Simulates millions of chips with continuous, aggressive failure injection. Throughput stays high; downstream model quality matches synchronous baselines.
-- **Generalizes across architectures.** Works for dense and MoE; works for both text and multimodal pretraining. Doesn't hinder downstream post-training.
+$$
+\theta_{r+1} = \theta_r - \eta_{\mathrm{outer}}\,
+\mathrm{Opt}_{\mathrm{outer}}\!\left(
+\frac{1}{|\mathcal{Q}_r|}\sum_{m \in \mathcal{Q}_r} w_m \Delta_r^{(m)}
+\right),
+$$
 
-**Connections:** First paper in this review. Direct evolution of DiLoCo (Douillard et al., 2024) and Streaming DiLoCo (2025), which it cites as the synchronous predecessors. The CAP-style framing positions it against slice-granular elasticity (Gemini's approach) and the Pathways vision (Barham et al., 2022).
+where $\mathcal{Q}_r$ is the quorum of learners received before commit and $w_m$ can weight learners by tokens processed. The optimization risk is drift: larger $H$, stale learners, and smaller quorums reduce communication but increase the mismatch between local objectives and the global trajectory.
+
+## Algorithms and Design Patterns
+
+**Periodic local training.**
+
+1. Broadcast parameters $\theta_r$ to learners.
+2. Run $H$ local optimizer steps on each learner.
+3. Send parameter deltas to the synchronizer.
+4. Aggregate deltas with an outer optimizer.
+5. Broadcast the updated parameters.
+
+**Decoupled asynchronous synchronization.**
+
+1. Partition the model into fragments.
+2. Let learners train continuously and emit fragment deltas independently.
+3. Commit a fragment update after a minimum quorum arrives.
+4. Wait only within an adaptive grace window for slow learners.
+5. Merge using token-weighted updates so learners that did more work count proportionally.
+
+This turns failure handling from a restart protocol into a throughput degradation protocol. If one learner disappears, the system loses that learner's token contribution; it does not lose the whole cluster's wall-clock interval.
+
+## Empirical Picture
+
+The empirical target is goodput: useful training tokens per wall-clock hour after downtime, restarts, stragglers, and communication stalls. A method that slightly perturbs the optimization path but avoids hours of global downtime can win decisively at scale.
+
+Decoupled DiLoCo reports quality matching standard data-parallel baselines across dense and MoE models, text and vision settings, while sustaining zero global downtime under aggressive simulated failures. The important evidence is the combination of quality preservation and chaos-engineering stress: the method is not merely communication-efficient in a clean lab setting, but designed for the failure rates expected in very large training runs.
+
+The remaining empirical gap is external reproducibility. These systems are hardest to validate outside large industrial clusters because the failure modes, network topology, and scale effects are the phenomenon.
+
+## Open Problems
+
+- **Staleness theory for LLM-scale nonconvex training:** local-update bounds are cleaner than the actual optimizer/model regime.
+- **MoE routing under partial participation:** expert load and token distribution can drift when learners process different data volumes.
+- **Optimizer compatibility:** AdamW, momentum SGD, Muon-like matrix optimizers, and outer optimizers interact differently with delta aggregation.
+- **Evaluation of goodput:** papers need standardized reporting that includes downtime, restart cost, and failure injection, not just tokens/sec.
+- **Cross-datacenter training:** asynchronous methods make it plausible, but data locality, privacy, and bandwidth asymmetry complicate the optimizer.
+
+## References
+
+- Google DeepMind and Google Research. "Decoupled DiLoCo for Resilient Distributed Pre-training." arXiv, 2026.
+  {/* paper-file: 2604.21428v1.pdf paper-hash: 148f68931c3b */}
+- Arthur Douillard et al. "DiLoCo: Distributed Low-Communication Training of Language Models." arXiv, 2024.
+- Paul Barham et al. "Pathways: Asynchronous Distributed Dataflow for ML." MLSys, 2022.
+- Jeffrey Dean et al. "Large Scale Distributed Deep Networks." NeurIPS, 2012.

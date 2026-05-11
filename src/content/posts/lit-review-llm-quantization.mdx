@@ -14,87 +14,124 @@ reviewed: false
 
 ## Overview
 
-Quantization replaces high-precision tensors (FP16/BF16) with low-bit integer or floating-point representations to shrink memory footprint, reduce bandwidth, and accelerate matmul-bound inference. For large language models the savings compound: a 70B FP16 model needs ~140 GB just for weights, while INT4 brings it under 40 GB and fits on a single A100-80GB.
+LLM quantization asks how far we can reduce numeric precision before the model's computation stops approximating the full-precision network. The deployment motivation is straightforward: memory bandwidth and KV-cache size dominate serving cost. A 70B FP16 model needs roughly 140 GB for weights alone; INT4 weights bring that under 40 GB before activation and cache overhead. The scientific problem is harder: LLMs have activation outliers, fragile downstream behavior, long-context cache pressure, and local calibration objectives that often fail to predict end-task quality.
 
-The canonical uniform-quantization map is
+The field has moved through three regimes. Post-training quantization (PTQ) calibrates a trained model cheaply, but aggressive W4A4 settings expose cumulative error and objective mismatch. Quantization-aware training (QAT) restores end-to-end alignment by training through simulated quantization, but conventional QAT is expensive at LLM scale. The current frontier tries to keep QAT's quality while removing its cost: data-free distillation, block-wise training plus end-to-end scale tuning, and forward-only zeroth-order QAT.
+
+Recent architecture reports push the same conclusion from the systems side: quantization is no longer only a post-hoc compression step. FP8 and FP4 constraints are becoming part of model design, training, and post-training infrastructure.
+
+## Conceptual Map
+
+- **Weight-only PTQ:** W4A16-style methods quantize weights while leaving activations high precision. GPTQ and AWQ are strong here because the hardest activation outliers remain uncompressed.
+- **Weight-activation PTQ:** W8A8 and W4A4 settings quantize both weights and activations. This is where SmoothQuant, Outlier Suppression, RPTQ, and OmniQuant address activation outliers and layer-wise reconstruction.
+- **Data-free QAT:** LLM-QAT uses the full-precision model to generate synthetic training data, then quantizes weights, activations, and KV cache without needing the original pretraining corpus.
+- **Efficient QAT:** EfficientQAT reduces QAT cost by splitting the problem: block-wise all-parameter reconstruction followed by end-to-end quantization-parameter tuning.
+- **Forward-only QAT:** ZeroQAT replaces backpropagation with zeroth-order finite-difference estimates, keeping an end-to-end objective while avoiding activation-gradient storage.
+- **Quantization-native training:** FP4/FP8-aware architecture and optimizer design treat low precision as a training constraint rather than a deployment afterthought.
+
+The key trend is from local approximation toward global task alignment. Low-bit quantization fails when each layer looks locally reconstructed but the whole model's perplexity or downstream accuracy degrades.
+
+## Mathematical Setup
+
+A uniform affine quantizer maps full-precision tensor $X$ to integer levels:
 
 $$
-W_{\text{int}} = \mathrm{clip}\!\left(\left\lfloor \frac{W}{s} \right\rceil + z,\; 0,\; 2^N - 1\right),\qquad \widehat{W} = (W_{\text{int}} - z)\cdot s,
+X_{\mathrm{int}} =
+\mathrm{clip}\!\left(
+\left\lfloor \frac{X}{s} \right\rceil + z,\,
+q_{\min}, q_{\max}
+\right),
+\qquad
+\widehat{X}=s(X_{\mathrm{int}}-z),
 $$
 
-where $s$ is the scale, $z$ the zero-point, $N$ the bit-width, and $\widehat{W}$ the dequantized value used in forward pass. Symmetric quantization fixes $z=0$ and $s = \max(|W|)/(2^{N-1}-1)$. Granularity choices (per-tensor, per-channel, per-token, per-group) trade off accuracy against the kernel cost of carrying many scales.
+where $s$ is the scale, $z$ the zero-point, and $\widehat{X}$ is the dequantized value used in the forward pass. Granularity matters: per-tensor scales are cheap but crude; per-channel and per-token scales better track LLM distributions but complicate kernels.
 
-Two regimes dominate the literature:
+QAT keeps full-precision shadow weights $W$ but evaluates quantized weights $Q_\phi(W)$:
 
-- **Post-Training Quantization (PTQ)** calibrates scales and rounding on a small dataset *after* training, never updating weights through gradients. GPTQ, AWQ, SmoothQuant, and OmniQuant are PTQ workhorses. PTQ is cheap but degrades sharply below 4 bits.
-- **Quantization-Aware Training (QAT)** simulates quantization during a fine-tuning pass via the *straight-through estimator* (STE): forward uses $\widehat{W}$, backward treats $\partial \widehat{W}/\partial W \approx 1$ inside the clip range. QAT recovers most of the low-bit accuracy gap but historically requires full training data and serious compute — both prohibitive for LLMs.
+$$
+\mathcal{L}_{\mathrm{QAT}}(\theta,\phi)
+= \mathbb{E}_{(x,y)}\left[
+\ell(f_{Q_\phi(\theta)}(x),y)
+\right].
+$$
 
-LLM-specific challenges that broke older recipes:
+The straight-through estimator approximates the derivative through rounding:
 
-1. **Outliers.** A small fraction of activation channels carry magnitudes 100–1000× larger than the median. Naive clipping destroys information; SmoothQuant migrates the magnitude into weights, AWQ scales salient channels protectively.
-2. **KV cache pressure.** At long context the KV cache dominates memory; quantizing K and V (e.g., INT4) is essential for throughput.
-3. **No training data.** Pre-training corpora are often unreleased, multi-stage (SFT + RLHF), or legally encumbered, so QAT must work data-free or with synthetic substitutes.
+$$
+\frac{\partial Q(W)}{\partial W} \approx
+\mathbf{1}\{q_{\min} < W/s + z < q_{\max}\}.
+$$
 
-Recent FP4-native training (e.g., NVIDIA Blackwell, DeepSeek-V4's FP4 QAT pipeline) and forward-only QAT methods blur the line: quantization is no longer only a post-hoc compression step, but can be baked into the training or calibration loop itself.
+ZeroQAT replaces this backpropagated update with a forward-only estimator:
 
-## Key Concepts
+$$
+\widehat{\nabla} \mathcal{L}(W)
+=
+\frac{1}{q}\sum_{i=1}^{q}
+\frac{\mathcal{L}(Q(W+\epsilon u_i))-\mathcal{L}(Q(W-\epsilon u_i))}
+{2\epsilon}u_i,
+\qquad u_i \sim \mathcal{N}(0,I).
+$$
 
-- **Bit-width notation:** `WxAyKVz` means `x`-bit weights, `y`-bit activations, `z`-bit KV cache. W4A8KV4 is a common aggressive target.
-- **STE (Straight-Through Estimator):** the trick that makes QAT differentiable through the rounding op.
-- **Block-wise reconstruction:** rather than end-to-end fine-tuning, optimize one transformer block at a time against the FP teacher's output. Cheap and parallelizable; basis for GPTQ, OmniQuant, BRECQ.
-- **Q-PEFT (Quantized PEFT):** freeze the quantized backbone, train a small set of continuous parameters (LoRA adapters, step sizes). QLoRA, QA-LoRA, PEQA.
-- **Data-free distillation:** use the FP teacher to generate synthetic prompts/completions, distill the quantized student against them. Sidesteps the missing-data problem.
-- **MinMax vs clipping quantizers:** MinMax preserves range (good when outliers matter); clipping reallocates precision to the bulk (good when outliers are rare).
+This makes the optimizer inference-like: two quantized forward passes per sampled direction rather than a full backward pass.
 
-## Papers
+## Algorithms and Design Patterns
 
-### LLM-QAT: Data-Free Quantization Aware Training for Large Language Models
-{/* paper-file: 2024.findings-acl.26.pdf paper-hash: aad88e777fd4 */}
-**Authors:** Zechun Liu, Barlas Oguz, Changsheng Zhao, Ernie Chang, Pierre Stock, Yashar Mehdad, Yangyang Shi, Raghuraman Krishnamoorthi, Vikas Chandra (Meta)
-**Year:** 2024
-**Source:** `inbox/papers/2024.findings-acl.26.pdf`
+**Data-free QAT.**
 
-**Contribution:** First successful application of QAT to LLMs (LLaMA 7B/13B/30B) at sub-8-bit precision. Sidesteps the missing-pretraining-data problem with a data-free distillation pipeline that uses the FP teacher's own next-token generations as fine-tuning data, and shows that quantizing weights, activations, and the KV cache jointly down to W4A8KV4 is feasible while preserving zero-shot generalization.
+1. Use the full-precision teacher to generate synthetic token sequences.
+2. Quantize weights, activations, and optionally KV cache in the student.
+3. Train the student to match teacher behavior under quantized forward passes.
+4. Preserve outliers when clipping destroys early training dynamics.
 
-**Key ideas:**
-- **Data-free knowledge distillation:** sample from the pretrained model with a hybrid strategy — top-1 for the first 3–5 tokens (anchor confidence), then stochastic SoftMax sampling. 100k generated sequences are enough.
-- **KV cache quantization is critical**, not optional: long-sequence throughput hinges on it.
-- **Symmetric MinMax over clipping:** for LLMs with GLU-shaped distributions, clipping outliers during early QAT explodes perplexity past 10000 and never recovers; preserving outliers wins.
-- **Per-token activation, per-channel weight** quantization granularity.
-- Larger QAT'd models beat smaller FP16 models at matched ops (W4A8KV16 13B > W8A8KV16 7B).
+LLM-QAT established this pattern and showed that W4A8KV4-style quantization can preserve zero-shot ability when the synthetic data and quantization choices are careful.
 
-**Connections:** First paper in this review. Establishes the QAT-for-LLMs baseline and the data-free pattern that EfficientQAT later inherits.
+**Block-wise efficient QAT.**
 
-### EfficientQAT: Efficient Quantization-Aware Training for Large Language Models
-{/* paper-file: 2407.11062v3.pdf paper-hash: e4036f5b554f */}
-**Authors:** Mengzhao Chen, Wenqi Shao, Peng Xu, Jiahao Wang, Peng Gao, Kaipeng Zhang, Ping Luo (HKU, Shanghai AI Lab)
-**Year:** 2024
-**Source:** `inbox/papers/2407.11062v3.pdf`
+1. Reconstruct one transformer block at a time against the full-precision teacher.
+2. Optimize all block parameters, not just scales or clipping thresholds.
+3. Freeze quantized weights.
+4. Run end-to-end tuning on quantization parameters such as step sizes.
 
-**Contribution:** A two-stage QAT framework that closes most of the accuracy gap to full QAT at PTQ-level cost. Block-AP trains *all* parameters (weights, scales, zero-points) block-wise, then E2E-QP freezes weights and end-to-end trains only the step sizes to capture inter-block interactions. Quantizes Llama-2-70B to 2-bit on a single A100-80GB in 41 hours with under 3 points zero-shot accuracy drop.
+EfficientQAT's insight is that block-wise training handles intra-block approximation while a lightweight end-to-end phase handles cross-block error accumulation.
 
-**Key ideas:**
-- **Block-AP** is the first method to train *all* original weights during block-wise reconstruction — prior work (OmniQuant, AutoRound, BRECQ, CBQ) restricted optimization to clipping thresholds, rounding, or LoRA adapters.
-- **E2E-QP** keeps quantized weights fixed, trains only scales end-to-end. Memory cost stays small because gradients flow only through a handful of step-size parameters.
-- The split exploits the fact that block-wise reconstruction handles intra-block precision, while end-to-end finishing handles cross-block error compounding.
-- Outperforms both uniform PTQ (AutoRound, OmniQuant, DB-LLM) and Q-PEFT (QLoRA, QA-LoRA, PEQA) at 2- and 3-bit settings; competitive with vector-quantization methods (QUIP#, AQLM) without their kernel overhead.
-- Works for instruction tuning too (+4.5 MMLU over PEQA on Alpaca).
+**Forward-only QAT.**
 
-**Connections:** Direct successor to LLM-QAT. Where LLM-QAT solved the *data* problem for QAT, EfficientQAT solves the *compute* problem — block-wise reconstruction lets you QAT a 70B model on one GPU. Together they make sub-4-bit LLMs practical.
+1. Keep full-precision shadow weights and quantizer parameters.
+2. Run quantized forward passes under positive and negative perturbations.
+3. Estimate gradients from loss differences.
+4. Jointly update weights, clipping thresholds, zero-points, and smoothing transforms.
 
-### ZeroQAT: Your Quantization-aware Training but Efficient
-{/* paper-file: 2509.00031v1.pdf paper-hash: a89ded00a360 */}
-**Authors:** Qitao Tan, Xiaoying Song, Jin Lu, Guoming Li, Jun Liu, Lingzi Hong, Caiwen Ding, Jundong Li, Xiaoming Zhai, Shaoyi Huang, Wei Niu, Geng Yuan (University of Georgia, University of North Texas, Northeastern University, University of Minnesota, University of Virginia, Stevens Institute of Technology)
-**Year:** 2025
-**Source:** `inbox/papers/2509.00031v1.pdf`
+ZeroQAT extends SmoothQuant-style outlier migration by learning the scale and shift parameters end to end. This directly targets the two PTQ failure modes it diagnoses: cumulative layer-wise error and mismatch between local reconstruction loss and global task quality.
 
-**Contribution:** Introduces a zeroth-order QAT framework for low-bit LLM quantization. Instead of full backpropagation, ZeroQAT estimates gradients with forward-only finite differences, jointly optimizing quantized weights, clipping thresholds, and equivalent transformations. The goal is to keep the end-to-end objective alignment of QAT while approaching PTQ-style memory and compute cost.
+## Empirical Picture
 
-**Key ideas:**
-- **Diagnoses PTQ's low-bit failure mode:** layer-wise calibration accumulates quantization error through depth, and local reconstruction losses can keep falling even when end-task perplexity worsens.
-- **Forward-only QAT:** estimates gradients from pairs of quantized forward passes, avoiding the activation-gradient storage and optimizer-state costs that make conventional QAT expensive for LLMs.
-- **Joint end-to-end optimization:** updates full-precision shadow weights while evaluating quantized weights, and learns smoothing parameters, step sizes, zero-points, and asymmetric clipping coefficients together.
-- **Outlier handling is adaptive:** extends SmoothQuant-style activation-weight smoothing by learning channel-wise scale and shift parameters instead of fixing them or calibrating them one layer at a time.
-- **Strongest gains appear in W4A4:** reports consistent perplexity and zero-shot accuracy improvements over SmoothQuant, OS+, RPTQ, OmniQuant, and LLM-QAT in aggressive weight-activation quantization; downstream fine-tuning results are especially large, e.g. OPT-6.7B W4A4 SST-2 rises from OmniQuant's 61.2% to ZeroQAT's 87.9%.
+The empirical ladder is bit-width dependent. At W6A6, several PTQ and efficient-QAT methods are close enough that kernel support and calibration cost may dominate the choice. At W4A4, the differences become large: local PTQ methods degrade sharply, while methods with weight adaptation and end-to-end alignment retain more quality.
 
-**Connections:** Complements EfficientQAT's block-wise-plus-end-to-end recipe with a different answer to the same compute bottleneck: remove backpropagation from QAT rather than shrinking the trainable surface. It also ties the quantization review back to zeroth-order LLM fine-tuning, suggesting that forward-pass-only optimization may be useful wherever deployment constraints require quantized weights during adaptation.
+LLM-QAT's evidence is strongest for data-free feasibility: generated sequences from the teacher can support QAT when original pretraining data is unavailable. EfficientQAT's evidence is about scale and cost: block-wise all-parameter training plus end-to-end scale tuning can quantize very large Llama-family models to 2-3 bits with small zero-shot drops. ZeroQAT's evidence is about low-bit weight-activation quantization and downstream fine-tuning: it reports consistent W4A4 perplexity and accuracy improvements over SmoothQuant, OS+, RPTQ, OmniQuant, and LLM-QAT, with especially large gains when the quantized model must also adapt to downstream tasks.
+
+The benchmark pattern matters. Perplexity on WikiText2, PTB, and C4 is useful but incomplete. Zero-shot tasks test generalization; instruction tuning and downstream fine-tuning test whether quantization survives adaptation; long-context serving tests whether KV-cache quantization and kernels actually improve cost.
+
+## Open Problems
+
+- **Objective mismatch:** layer-wise reconstruction can improve while perplexity worsens.
+- **Activation outliers:** preserving outliers helps quality, but serving kernels prefer regular ranges.
+- **Calibration representativeness:** small calibration sets can miss rare but important activation regimes.
+- **Kernel reality:** low-bit math is only useful when hardware and kernels exploit it end to end.
+- **Quantized fine-tuning:** adapting a low-bit model is harder than only serving it.
+- **KV-cache quantization:** long-context memory pressure makes cache precision as important as weight precision.
+- **Interaction with MoE and agents:** routing, tool use, and long rollouts may stress quantized models differently from static benchmarks.
+
+## References
+
+- Zechun Liu, Barlas Oguz, Changsheng Zhao, Ernie Chang, Pierre Stock, Yashar Mehdad, Yangyang Shi, Raghuraman Krishnamoorthi, and Vikas Chandra. "LLM-QAT: Data-Free Quantization Aware Training for Large Language Models." Findings of ACL, 2024.
+  {/* paper-file: 2024.findings-acl.26.pdf paper-hash: aad88e777fd4 */}
+- Mengzhao Chen, Wenqi Shao, Peng Xu, Jiahao Wang, Peng Gao, Kaipeng Zhang, and Ping Luo. "EfficientQAT: Efficient Quantization-Aware Training for Large Language Models." arXiv, 2024.
+  {/* paper-file: 2407.11062v3.pdf paper-hash: e4036f5b554f */}
+- Qitao Tan, Xiaoying Song, Jin Lu, Guoming Li, Jun Liu, Lingzi Hong, Caiwen Ding, Jundong Li, Xiaoming Zhai, Shaoyi Huang, Wei Niu, and Geng Yuan. "ZeroQAT: Your Quantization-aware Training but Efficient." arXiv, 2025.
+  {/* paper-file: 2509.00031v1.pdf paper-hash: a89ded00a360 */}
+- Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. "GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers." arXiv, 2022.
+- Ji Lin et al. "AWQ: Activation-aware Weight Quantization for On-Device LLM Compression and Acceleration." MLSys, 2024.
+- Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song Han. "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models." ICML, 2023.
+- Wenqi Shao et al. "OmniQuant: Omnidirectionally Calibrated Quantization for Large Language Models." arXiv, 2023.

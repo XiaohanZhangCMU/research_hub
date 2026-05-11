@@ -2,7 +2,7 @@
 title: "Literature Review: LLM Fine-Tuning Optimization"
 description: "Optimization algorithms for adapting pretrained LLMs to downstream tasks — gradient-based, zeroth-order, and population-based."
 date: 2026-05-06
-updated: 2026-05-06
+updated: 2026-05-11
 tags: ["literature-review", "fine-tuning", "evolution-strategies", "rl", "post-training"]
 series: "lit-review-llm-fine-tuning"
 draft: false
@@ -14,60 +14,101 @@ reviewed: false
 
 ## Overview
 
-Pretraining produces a general-purpose next-token predictor; *fine-tuning* shapes it into something useful — instruction-following, aligned with preferences, specialized to a task. The dominant pipeline today is SFT (supervised fine-tuning on demonstrations) followed by some form of preference optimization or RL: PPO with a reward model, DPO, GRPO, RLHF/RLAIF.
+Fine-tuning turns a pretrained next-token model into a task policy: instruction follower, domain specialist, reasoning model, coding agent, or preference-aligned assistant. The dominant recipe is still gradient-based: supervised fine-tuning on demonstrations, then preference optimization or reinforcement learning. But the harder the task becomes, the more the optimizer matters. Long-horizon rewards, sparse pass/fail signals, reward-model loopholes, and model-specific instability have reopened the case for zeroth-order and population-based methods.
 
-The RL formulation treats the LLM as a policy $\pi_\theta(a \mid s)$ and maximizes expected reward:
+The usual RL objective treats the LLM as a policy:
 
 $$
-J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\!\left[\sum_{t=0}^{T} r_t\right],
+J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[\sum_{t=0}^{T} r_t\right],
 \qquad
-\nabla_\theta J(\theta) = \mathbb{E}_\tau\!\left[\sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t)\, A_t\right],
+\nabla_\theta J(\theta) =
+\mathbb{E}_\tau\left[\sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t)A_t\right].
 $$
 
-with $A_t$ an advantage estimate. PPO clips the importance ratio; GRPO replaces the value head with group-relative baselines; DPO bypasses RL by reformulating preference pairs as a classification loss against a reference model.
+This is powerful when dense credit assignment or a reliable reward model exists. It is brittle when the only signal is an end-of-trajectory scalar. Evolution Strategies at Scale reframes the issue: if the reward is naturally response-level, maybe the optimizer should operate on whole policies rather than token-level actions.
 
-But RL has chronic problems on long-horizon, sparse-reward LLM tasks:
+## Conceptual Map
 
-- **Credit assignment** at the token level is brittle when the only reward is end-of-trajectory.
-- **High-variance policy gradients** demand massive batches.
-- **Reward hacking** is the default failure mode whenever the proxy reward is imperfect.
-- **Run-to-run instability**: same hyperparameters, different seeds, wildly different outputs.
-- **Backbone sensitivity:** a recipe that works on Qwen may fail on Llama.
+- **Gradient-based SFT:** optimizes likelihood on demonstrations. Stable and data-efficient, but bounded by demonstration quality.
+- **Preference optimization:** PPO, DPO, GRPO, and related methods steer behavior using preferences or rewards. They are effective but sensitive to reward design, KL control, batch size, and base model.
+- **Single-point zeroth-order methods:** MeZO-style finite differences estimate gradients from forward passes and avoid activation storage. They reduce memory but still optimize one parameter vector.
+- **Population-based zeroth-order methods:** Evolution Strategies sample many perturbations, score whole candidates, and update a distribution. They are naturally compatible with sparse outcome rewards.
+- **Parameter-efficient fine-tuning:** LoRA, adapters, prefixes, and prompt tuning shrink the trainable surface. They are orthogonal to the optimizer choice: RL, ZO, or ES can in principle optimize full weights or adapters.
 
-This has revived interest in alternatives. **Zeroth-order (ZO) methods** estimate gradients from finite differences of perturbed parameters — no backprop, no value network, only forward inference. **Evolution Strategies (ES)** are population-based ZO methods that sample $N$ perturbed policies, evaluate fitness, and update the mean toward better samples. The natural-ES update is
+The emerging fault line is not "RL versus non-RL" in the abstract. It is action-space exploration versus parameter-space exploration under sparse, delayed, and noisy rewards.
+
+## Mathematical Setup
+
+Policy-gradient RL perturbs the action distribution and estimates which sampled tokens or actions increased reward. PPO adds a clipped importance ratio
 
 $$
-\theta \leftarrow \theta + \alpha \cdot \frac{1}{N\sigma} \sum_{i=1}^{N} F_i\, \epsilon_i,
-\qquad \epsilon_i \sim \mathcal{N}(0, I),
+L^{\mathrm{PPO}}(\theta) =
+\mathbb{E}_t\left[
+\min\left(r_t(\theta)A_t,\,
+\mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)A_t
+\right)\right],
 $$
 
-with $F_i$ the fitness of the $i$-th perturbation. Salimans et al. (2017) made ES competitive with RL on Atari, but the prevailing belief was that exploration in parameter space scales quadratically with parameter count and breaks at LLM scale. Recent work directly contradicts that.
+where $r_t(\theta)=\pi_\theta(a_t\mid s_t)/\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)$.
 
-Parameter-efficient fine-tuning (PEFT) — LoRA, prefix tuning, adapters — is orthogonal: it shrinks the *trainable surface* but doesn't change the optimizer. The story below is about the optimizer choice.
+Evolution Strategies instead optimize expected fitness under a parameter distribution:
 
-## Key Concepts
+$$
+J(\mu) = \mathbb{E}_{\epsilon \sim \mathcal{N}(0,I)}
+\left[F(\mu + \sigma \epsilon)\right].
+$$
 
-- **Outcome reward / response-level reward:** a single scalar at the end of a generation, no per-token signal. The hardest case for RL credit assignment, the easiest for ES.
-- **Reward hacking:** the policy exploits a quirk of the reward model rather than improving the underlying behavior. A failure mode of *single-solution* optimizers; ES optimizes a *distribution* and is structurally more resistant.
-- **MeZO:** memory-efficient zeroth-order, an SPSA-style optimizer for LLM fine-tuning that avoids storing optimizer states or activations.
-- **CMA-ES, NES:** classic ES variants with full or natural-gradient covariance — too heavy at billion-parameter scale, where antithetic isotropic Gaussian perturbations dominate.
-- **Action-space vs parameter-space exploration:** RL perturbs the action distribution; ES/GA perturb the weights directly. Trade-offs depend on horizon length and reward sparsity.
+The antithetic estimator is
 
-## Papers
+$$
+\widehat{\nabla}_\mu J =
+\frac{1}{2N\sigma}\sum_{i=1}^{N}
+\left(F(\mu+\sigma\epsilon_i)-F(\mu-\sigma\epsilon_i)\right)\epsilon_i.
+$$
 
-### Evolution Strategies at Scale: LLM Fine-Tuning Beyond Reinforcement Learning
-{/* paper-file: 2509.24372v2.pdf paper-hash: 67935fe6e700 */}
-**Authors:** Xin Qiu, Yulu Gan, Conor F. Hayes, Qiyao Liang, Yinggan Xu, Roberto Dailey, Elliot Meyerson, Babak Hodjat, Risto Miikkulainen (Cognizant AI Lab, MIT, UCLA, UT Austin)
-**Year:** 2026
-**Source:** `inbox/papers/2509.24372v2.pdf`
+The update moves the center $\mu$ toward perturbations that achieved higher whole-response fitness. No backpropagation, value function, or token-level advantage is required.
 
-**Contribution:** First demonstration that Evolution Strategies can fine-tune the *full* parameter space of billion-parameter LLMs without dimensionality reduction, and that doing so beats SOTA RL fine-tuning on multiple axes — long-horizon reward tolerance, robustness across base models, resistance to reward hacking, and cross-run consistency. Directly overturns the long-standing assumption that ES doesn't scale.
+## Algorithms and Design Patterns
 
-**Key ideas:**
-- **Tiny populations work at scale.** Population size 30 (vs. 10,000+ in classic ES) is enough in billion-parameter spaces. Earlier ES work used vastly smaller models with vastly larger populations; modern LLMs are *easier*, not harder, in this regime.
-- **Memory-efficient algorithmic simplification.** Drops covariance machinery (CMA-ES, NES) in favor of antithetic isotropic perturbations; checkpoint and seed-based reconstruction means each "individual" stores only a seed and a fitness.
-- **Outcome rewards fit ES naturally.** ES needs only response-level fitness, so sparse end-of-trajectory rewards (Countdown task) become a non-issue — exactly the regime where RL's credit-assignment crisis bites hardest.
-- **Robustness > RL.** ES fine-tunes successfully across multiple base LLMs where RL recipes failed; reward-hacks less because it optimizes a *distribution* over solutions; cross-run variance is far lower.
-- **No backprop required.** Inference-only, so memory savings are large — no activations, no optimizer states for the perturbed evaluations.
+**Gradient-based post-training.**
 
-**Connections:** First paper in this review. Sits in opposition to the entire RL-for-LLM-post-training stack (PPO/GRPO/DPO) and to MeZO-style zeroth-order single-point optimizers. Plausibly complementary to Q-PEFT methods (the LLM Quantization review): a quantized backbone with ES-driven step-size or adapter updates would be inference-only end to end.
+1. SFT the model on demonstrations.
+2. Collect preference or reward data.
+3. Optimize with DPO, PPO, GRPO, or a related objective.
+4. Maintain a KL constraint to avoid drifting too far from the reference model.
+5. Evaluate for reward hacking and distribution shift.
+
+**Evolution-strategy fine-tuning.**
+
+1. Keep a central parameter vector or checkpoint.
+2. Sample antithetic perturbation seeds $\epsilon_i$.
+3. Evaluate perturbed models using only forward inference and a response-level fitness.
+4. Reconstruct perturbations from seeds and aggregate the ES update.
+5. Repeat with small populations if model scale supplies enough useful geometry.
+
+The memory advantage is structural. Perturbed evaluations store seeds and scalar fitnesses, not activation tensors or optimizer states. This makes ES especially interesting for full-parameter or quantized fine-tuning regimes where backpropagation is the deployment bottleneck.
+
+## Empirical Picture
+
+Evolution Strategies at Scale argues against a long-standing assumption: that parameter-space exploration cannot work for billion-parameter LLMs. The paper reports that small populations, around dozens rather than thousands of candidates, can fine-tune full LLM parameter spaces and outperform RL recipes on long-horizon sparse-reward tasks.
+
+The important empirical claims are robustness and reward behavior. ES is reported to transfer across base models where RL recipes are brittle, produce lower run-to-run variance, and reward-hack less because it optimizes a distribution over solutions rather than a single policy trajectory. The most compelling regimes are response-level tasks such as Countdown-like reasoning, where the final answer is easy to score and intermediate credit is ambiguous.
+
+This does not make RL obsolete. RL remains better matched to settings with rich interaction data, well-shaped rewards, or a need to adapt action probabilities precisely. The new evidence says the optimizer choice should depend on reward topology: when the reward is sparse and whole-trajectory, population-based ZO methods deserve to be first-class baselines.
+
+## Open Problems
+
+- **Scaling laws for ES population size:** why small populations work at LLM scale is not yet theoretically settled.
+- **Hybrid ES + PEFT:** adapters or low-rank updates could make population methods cheaper while preserving robustness.
+- **ES for tool agents:** coding and search agents have exactly the sparse outcome rewards ES likes, but evaluation cost is high.
+- **Distributional safety:** optimizing a population may reduce some reward hacking, but it can still exploit flawed fitness functions.
+- **Quantized inference-only training:** ES pairs naturally with quantized backbones and forward-only deployment constraints.
+
+## References
+
+- Xin Qiu, Yulu Gan, Conor F. Hayes, Qiyao Liang, Yinggan Xu, Roberto Dailey, Elliot Meyerson, Babak Hodjat, and Risto Miikkulainen. "Evolution Strategies at Scale: LLM Fine-Tuning Beyond Reinforcement Learning." arXiv, 2026.
+  {/* paper-file: 2509.24372v2.pdf paper-hash: 67935fe6e700 */}
+- Tim Salimans et al. "Evolution Strategies as a Scalable Alternative to Reinforcement Learning." arXiv, 2017.
+- Sadhika Malladi et al. "Fine-Tuning Language Models with Just Forward Passes." NeurIPS, 2023.
+- John Schulman et al. "Proximal Policy Optimization Algorithms." arXiv, 2017.
+- Rafael Rafailov et al. "Direct Preference Optimization: Your Language Model is Secretly a Reward Model." NeurIPS, 2023.

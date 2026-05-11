@@ -2,7 +2,7 @@
 title: "Literature Review: Agentic LLMs"
 description: "LLMs as autonomous agents that plan, use tools, and act in real environments — trained primarily through reinforcement learning."
 date: 2026-05-06
-updated: 2026-05-06
+updated: 2026-05-11
 tags: ["literature-review", "agents", "rl", "tool-use", "search", "coding-agents"]
 series: "lit-review-agentic-llms"
 draft: false
@@ -14,76 +14,94 @@ reviewed: false
 
 ## Overview
 
-An *agentic* LLM is one that doesn't just answer; it acts. Given a goal and a toolbox — search engines, code interpreters, file editors, shell, browsers — the agent emits a sequence of actions, observes results, and iterates until the task is solved. This is a clean fit for the standard RL setup: the agent samples action $a_t \sim \pi_\theta(a_t \mid x, a_{1..t-1}, y_{1..t-1})$, the environment returns $y_t$, and a reward is delivered (often only at the end).
+Agentic LLM research asks how to turn a language model from a responder into a policy that can act in an environment. The environment may be a search engine, a codebase, a terminal, a browser, or a product surface. The core shift is that quality no longer depends only on the next token distribution; it depends on trajectories: which tools the model calls, what observations it conditions on, whether it recovers from mistakes, and whether the final state satisfies the task.
 
-The progression has been:
-
-1. **Prompt-engineered agents** (ReAct, Toolformer-style few-shot): the LLM is fixed; intelligence comes from scaffolding. Fragile, hand-tuned.
-2. **SFT'd agents:** train on demonstrations of successful trajectories. Better, but bottlenecked by demonstration quality and unable to discover new strategies.
-3. **RL-trained agents:** the current frontier. Reward the agent for end-task success and let it discover its own strategies — multi-step search, self-correction, tool composition.
-
-The action-conditioned policy gradient is
+This makes agentic LLMs a natural reinforcement-learning problem. Given state $s_t$ containing the user goal, history, tool outputs, and scratchpad, the model samples an action
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}_\tau\!\left[\sum_{t=0}^{T} \nabla_\theta \log \pi_\theta(a_t \mid s_t)\, A_t\right],
+a_t \sim \pi_\theta(a_t \mid s_t),
 $$
 
-but the practical engineering matters more than the equation: rollout infrastructure, reward design, environment fidelity, off-policy correction, and mitigation of the well-known RL pathologies (reward hacking, credit assignment over very long horizons, mode collapse).
+the environment returns an observation $o_{t+1}$, and the episode receives reward $R(\tau)$, often only at the end. The practical question is not whether this is RL in principle; it is how to make long-horizon, high-variance, tool-mediated RL work without overfitting to fragile harness details or reward loopholes.
 
-Two domains dominate current agentic-RL research:
+Two application families currently define the field. Agentic search replaces static retrieve-then-read with a model that decides when to query, how to refine the query, what evidence to trust, and when to stop. Coding agents use compilers, tests, file editors, terminals, and repository context to solve software tasks whose success can often be verified automatically. The search literature supplies the taxonomy of roles and rewards; the coding-agent literature supplies the harshest systems test of train-test parity, long rollouts, and outcome-only rewards.
 
-- **Agentic search / RAG.** Replace single-shot retrieve-then-read with a multi-turn agent that issues queries, evaluates results, refines, and synthesizes. RL trains *when* to retrieve, *what* to retrieve, and *how* to integrate.
-- **Coding agents.** SWE-bench, Terminal-Bench, internal codebase tasks. Long horizons (10–100+ tool calls), partial credit hard to define, ground-truth correctness available via test execution. Composer 2, Claude Code, Cursor, Devin all live here.
+## Conceptual Map
 
-Common training-system patterns:
+- **Prompted tool users:** ReAct-style agents and early tool-use prompting keep the base model fixed. Capability comes from scaffolding: tool definitions, examples, scratchpad formatting, and retry loops. This is cheap but brittle.
+- **Demonstration-trained agents:** SFT on trajectories improves tool syntax and common workflows, but it inherits the ceiling of the demonstrations and rarely discovers new strategies.
+- **RL-trained agents:** The agent is rewarded for task success over full trajectories. This lets it learn search depth, self-correction, and tool composition, but raises rollout, reward, and stability costs.
+- **Agentic search:** The action space is mostly information seeking: issue a query, inspect a result, reformulate, cite, synthesize. The main risk is confident synthesis from incomplete or noisy evidence.
+- **Coding agents:** The action space is operational: edit files, run tests, inspect failures, patch again. The reward is often verifiable, but episodes are long and the harness is part of the learned behavior.
 
-- **Train-test parity:** train inside the *same* harness used at deploy time (same tools, same prompts, same scaffolding). Train-test mismatch is the silent killer of agent quality.
-- **Asynchronous rollouts** (because trajectories are long and variable-length), with off-policy importance correction.
-- **Group-relative advantages** (GRPO-style) to avoid the value-function headache.
-- **Verifiable rewards** wherever possible — unit tests, exact match, oracle simulators — so reward hacking has nowhere to go.
+The key connection between the survey work on RL-based agentic search and the Composer 2 technical report is scope. Agentic-search papers classify what RL can optimize inside an information-seeking loop; Composer 2 shows the same agent-level recipe in a development environment, with a full training stack around realistic tasks, tools, and outcome rewards.
 
-## Key Concepts
+## Mathematical Setup
 
-- **Search agent:** an LLM that plans and executes multi-turn retrieval against a search engine or knowledge base, refining queries based on intermediate observations.
-- **Agentic RAG:** the broader pattern — retrieval embedded as one tool among many in an agent loop.
-- **CursorBench, SWE-bench, Terminal-Bench:** coding-agent evaluation suites of varying realism, from synthetic Python to full repository tasks.
-- **Outcome-only reward:** end-of-trajectory pass/fail, no shaped intermediate signal. Standard for code (does the test pass?), forces the agent to learn long-horizon credit assignment.
-- **Harness:** the orchestration layer (tool definitions, prompt format, context management) wrapping the underlying LLM. The harness is part of the agent.
-- **Continued pretraining → SFT → RL:** the now-standard three-stage recipe for domain-specialized agents.
+For an episode $\tau = (s_0, a_0, o_1, \ldots, s_T, a_T)$, the objective is
 
-## Papers
+$$
+J(\theta) = \mathbb{E}_{\tau \sim \pi_\theta}\left[R(\tau)\right].
+$$
 
-### A Comprehensive Survey on Reinforcement Learning-based Agentic Search
-{/* paper-file: 2510.16724v2.pdf paper-hash: ea1ac38a19ad */}
-**Authors:** Minhua Lin, Zongyu Wu, Zhichao Xu, Hui Liu, Xianfeng Tang, Qi He, Charu Aggarwal, Hui Liu, Xiang Zhang, Suhang Wang (Penn State, Utah, Amazon, Microsoft, IBM, Michigan State)
-**Year:** 2025
-**Source:** `inbox/papers/2510.16724v2.pdf`
+A policy-gradient update uses
 
-**Contribution:** First systematic survey of RL-based agentic search — LLMs trained via RL to plan, retrieve, reflect, and reason across multi-step interactions with search environments. Organizes the field along three axes: *what* RL is for (functional roles), *how* RL is used (optimization strategies), and *where* RL is applied (scope: agent / step / module level). Argues RL is what turns prompt-engineered RAG pipelines into genuinely autonomous information-seeking agents.
+$$
+\nabla_\theta J(\theta)
+= \mathbb{E}_\tau\left[\sum_{t=0}^{T}
+\nabla_\theta \log \pi_\theta(a_t \mid s_t) A_t\right],
+$$
 
-**Key ideas:**
-- **Three-axis taxonomy** as the survey's organizing spine: functional role × optimization strategy × scope of intervention. Most prior agentic-search work mixes all three; separating them clarifies design choices.
-- **Limits of static RAG:** single-turn retrieval, no adaptive query refinement, vulnerable to noisy retrievals. Iterative-RAG patches but doesn't fix.
-- **Three properties RL unlocks:** *autonomy* (agent picks its actions), *learning* (strategies emerge from reward, not handcrafting), *interaction* (multi-turn refinement against the search env).
-- **Reward design is the bottleneck.** Outcome-only rewards underspecify search behavior; process rewards are expensive to label; verifier-based rewards are the active research front.
-- **Distinguishes from adjacent surveys:** prior work covered agentic RAG, RAG reasoning, or general search agents — this is the first to put RL foundations at the center.
+where $A_t$ estimates whether action $a_t$ improved the outcome relative to a baseline. The difficulty is that for real agents $R(\tau)$ may be pass/fail, delayed by dozens of tool calls, and sensitive to environment nondeterminism.
 
-**Connections:** First paper in this review. Provides the conceptual scaffolding the Composer 2 paper inhabits in practice — Composer 2 is, in this taxonomy, an RL-trained coding agent operating at *agent-level* scope with *outcome-based* rewards in a development environment rather than a search engine.
+Agentic search can be described by a discrete tool policy:
 
-### Composer 2 Technical Report
-{/* paper-file: 2603.24477v2.pdf paper-hash: 933e9f272096 */}
-**Authors:** Cursor Research Team
-**Year:** 2026
-**Source:** `inbox/papers/2603.24477v2.pdf`
+$$
+a_t \in \{\mathrm{query}(q), \mathrm{read}(d), \mathrm{reflect}, \mathrm{answer}\}.
+$$
 
-**Contribution:** Technical report for Composer 2, a coding-specialized agentic LLM trained via continued pretraining + large-scale RL on top of Kimi K2.5 (1.04T MoE / 32B active). Achieves frontier-level performance on Terminal-Bench (61.7) and SWE-bench Multilingual (73.7) while being cheaper to serve than general-purpose frontier APIs. Demonstrates a reproducible recipe for training domain-specialized agents.
+Coding agents have a richer action set:
 
-**Key ideas:**
-- **Train-test parity as a first principle.** RL happens inside the same Cursor harness used at inference — same tools, same prompt structure, same context management. Closes the dominant source of agent regressions.
-- **Three-phase continued pretraining:** bulk training at 32k context, long-context extension to 256k, then targeted-task SFT. Codebase perplexity is shown to be predictive of downstream RL reward.
-- **Realistic task distribution.** RL training tasks span debugging, refactor, new feature, code review, devops, migration, deletion — not just bug-fix-from-issue (the SWE-bench shape). Captures real software work.
-- **MTP layers for inference speed.** Multi-token-prediction heads trained via self-distillation on a mid-pretraining checkpoint, then jointly with the final phases. Used with speculative decoding at deploy time.
-- **MXFP8 training on B300s** with AdamW; large-scale asynchronous RL pipeline.
-- Specialization wins on cost: a 32B-active MoE specialist competes with state-of-the-art general models at lower serving cost.
+$$
+a_t \in \{\mathrm{open}(f), \mathrm{edit}(f, \Delta), \mathrm{run}(c), \mathrm{inspect}(e), \mathrm{final}\}.
+$$
 
-**Connections:** Concrete instantiation of the RL-trained agent paradigm surveyed by Lin et al. — same building blocks (multi-step tool use, outcome rewards, multi-turn rollout) applied to coding instead of search. Composer 2 is also the kind of system whose post-training pipeline the *LLM Fine-Tuning* review's ES results challenge: would ES fine-tuning of a coding agent's policy avoid the reward hacking and instability that asynchronous RL pipelines have to engineer around?
+The harness maps model tokens to these actions and maps environment events back into text observations. That means the prompt format, tool schema, truncation strategy, retry policy, and test runner are not peripheral engineering; they are part of the Markov decision process the model is trained in.
+
+## Algorithms and Design Patterns
+
+**Train-test parity.** The strongest design rule is to train in the same harness used at inference. Composer 2 makes this explicit: RL rollouts happen inside the Cursor harness, with the same tool definitions, context management, and coding workflow expected at deployment. Mismatch here creates agents that optimize the training scaffold rather than the product behavior.
+
+**Outcome-verifiable training.** Coding tasks are attractive because rewards can be grounded in tests, linters, build success, or benchmark validators. Search is harder: answer correctness, citation faithfulness, and evidence sufficiency are less directly executable, so the field relies more on process rewards, learned verifiers, or human-labeled judgments.
+
+**Asynchronous rollout infrastructure.** Agent trajectories vary wildly in length. Large-scale systems therefore decouple rollout workers from learners, aggregate batches asynchronously, and use correction or filtering to keep stale trajectories from dominating.
+
+**Group-relative baselines.** Instead of training a value head for every long-horizon state, many modern LLM-RL recipes compare multiple sampled trajectories for the same task and compute relative advantages. This is a pragmatic response to sparse rewards and expensive value modeling.
+
+**Specialize before RL.** Composer 2 follows a continued-pretraining, long-context extension, SFT, then RL recipe. The point is to make the base policy fluent in code and repository context before asking RL to discover higher-level strategies.
+
+## Empirical Picture
+
+The empirical center of agentic LLMs is shifting from static question answering to environment completion. For search, this means multi-turn retrieval and synthesis benchmarks that test whether the model can gather the right evidence, not merely answer from parametric memory. For coding, SWE-bench, Terminal-Bench, and internal repository tasks test whether agents can modify real projects under tool constraints.
+
+The strongest evidence so far comes from settings with verifiable rewards. Composer 2 reports frontier-level coding-agent performance while using a 32B-active MoE specialist rather than a general frontier model. The important empirical claim is not just the score; it is that realistic task distributions and harness-matched RL can produce a cheaper specialist that competes with larger general-purpose systems.
+
+Agentic-search evidence is more taxonomic and methodological. The RL-based agentic-search survey argues that RL matters because it optimizes autonomy, learning, and interaction: the model learns what to retrieve, when to retrieve, and how to use the result. The unresolved empirical issue is reward validity. Search systems can look good under answer-level metrics while still using weak evidence, over-retrieving, or hiding uncertainty.
+
+## Open Problems
+
+- **Credit assignment over tool traces:** outcome-only reward does not say which query, edit, or observation caused success.
+- **Reward hacking:** agents can learn to satisfy validators, tests, or citation formats without solving the real task.
+- **Harness overfitting:** small changes to tool schemas or prompts can break learned policies.
+- **Environment fidelity:** training sandboxes often differ from real codebases, browsers, and enterprise systems.
+- **Search faithfulness:** agentic RAG needs rewards for evidence sufficiency and citation grounding, not just answer correctness.
+- **Cost-aware agency:** the policy should learn when extra tool calls are worth their latency and compute.
+
+## References
+
+- Minhua Lin, Zongyu Wu, Zhichao Xu, Hui Liu, Xianfeng Tang, Qi He, Charu Aggarwal, Hui Liu, Xiang Zhang, and Suhang Wang. "A Comprehensive Survey on Reinforcement Learning-based Agentic Search." arXiv, 2025.
+  {/* paper-file: 2510.16724v2.pdf paper-hash: ea1ac38a19ad */}
+- Cursor Research Team. "Composer 2 Technical Report." arXiv, 2026.
+  {/* paper-file: 2603.24477v2.pdf paper-hash: 933e9f272096 */}
+- Shunyu Yao et al. "ReAct: Synergizing Reasoning and Acting in Language Models." ICLR, 2023.
+- Timo Schick et al. "Toolformer: Language Models Can Teach Themselves to Use Tools." NeurIPS, 2023.
