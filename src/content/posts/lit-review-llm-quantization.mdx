@@ -2,7 +2,7 @@
 title: "Literature Review: LLM Quantization"
 description: "Compressing large language model weights, activations, and KV caches to low-bit formats while preserving accuracy."
 date: 2026-05-06
-updated: 2026-05-06
+updated: 2026-05-11
 tags: ["literature-review", "quantization", "llm", "efficient-inference"]
 series: "lit-review-llm-quantization"
 draft: false
@@ -35,7 +35,7 @@ LLM-specific challenges that broke older recipes:
 2. **KV cache pressure.** At long context the KV cache dominates memory; quantizing K and V (e.g., INT4) is essential for throughput.
 3. **No training data.** Pre-training corpora are often unreleased, multi-stage (SFT + RLHF), or legally encumbered, so QAT must work data-free or with synthetic substitutes.
 
-Recent FP4-native training (e.g., NVIDIA Blackwell, DeepSeek-V4's FP4 QAT pipeline) blurs the line: quantization is no longer a post-hoc compression step but baked into the training loop itself.
+Recent FP4-native training (e.g., NVIDIA Blackwell, DeepSeek-V4's FP4 QAT pipeline) and forward-only QAT methods blur the line: quantization is no longer only a post-hoc compression step, but can be baked into the training or calibration loop itself.
 
 ## Key Concepts
 
@@ -81,3 +81,20 @@ Recent FP4-native training (e.g., NVIDIA Blackwell, DeepSeek-V4's FP4 QAT pipeli
 - Works for instruction tuning too (+4.5 MMLU over PEQA on Alpaca).
 
 **Connections:** Direct successor to LLM-QAT. Where LLM-QAT solved the *data* problem for QAT, EfficientQAT solves the *compute* problem — block-wise reconstruction lets you QAT a 70B model on one GPU. Together they make sub-4-bit LLMs practical.
+
+### ZeroQAT: Your Quantization-aware Training but Efficient
+{/* paper-file: 2509.00031v1.pdf paper-hash: a89ded00a360 */}
+**Authors:** Qitao Tan, Xiaoying Song, Jin Lu, Guoming Li, Jun Liu, Lingzi Hong, Caiwen Ding, Jundong Li, Xiaoming Zhai, Shaoyi Huang, Wei Niu, Geng Yuan (University of Georgia, University of North Texas, Northeastern University, University of Minnesota, University of Virginia, Stevens Institute of Technology)
+**Year:** 2025
+**Source:** `inbox/papers/2509.00031v1.pdf`
+
+**Contribution:** Introduces a zeroth-order QAT framework for low-bit LLM quantization. Instead of full backpropagation, ZeroQAT estimates gradients with forward-only finite differences, jointly optimizing quantized weights, clipping thresholds, and equivalent transformations. The goal is to keep the end-to-end objective alignment of QAT while approaching PTQ-style memory and compute cost.
+
+**Key ideas:**
+- **Diagnoses PTQ's low-bit failure mode:** layer-wise calibration accumulates quantization error through depth, and local reconstruction losses can keep falling even when end-task perplexity worsens.
+- **Forward-only QAT:** estimates gradients from pairs of quantized forward passes, avoiding the activation-gradient storage and optimizer-state costs that make conventional QAT expensive for LLMs.
+- **Joint end-to-end optimization:** updates full-precision shadow weights while evaluating quantized weights, and learns smoothing parameters, step sizes, zero-points, and asymmetric clipping coefficients together.
+- **Outlier handling is adaptive:** extends SmoothQuant-style activation-weight smoothing by learning channel-wise scale and shift parameters instead of fixing them or calibrating them one layer at a time.
+- **Strongest gains appear in W4A4:** reports consistent perplexity and zero-shot accuracy improvements over SmoothQuant, OS+, RPTQ, OmniQuant, and LLM-QAT in aggressive weight-activation quantization; downstream fine-tuning results are especially large, e.g. OPT-6.7B W4A4 SST-2 rises from OmniQuant's 61.2% to ZeroQAT's 87.9%.
+
+**Connections:** Complements EfficientQAT's block-wise-plus-end-to-end recipe with a different answer to the same compute bottleneck: remove backpropagation from QAT rather than shrinking the trainable surface. It also ties the quantization review back to zeroth-order LLM fine-tuning, suggesting that forward-pass-only optimization may be useful wherever deployment constraints require quantized weights during adaptation.

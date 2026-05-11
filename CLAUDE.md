@@ -12,23 +12,27 @@ Stack: Astro 5 + Tailwind v4 + MDX + KaTeX + Vercel (auto-deploy on push to `mai
 
 ---
 
-## Critical: npm Registry
+## Local Build Setup
 
-**Direct access to `registry.npmjs.org` is blocked on the Databricks network.**
+This repo now builds on a normal laptop with the public npm registry.
 
-Always use the Databricks npm proxy for installs:
-- The local `.npmrc` (gitignored) is set to `registry=https://npm-proxy.dev.databricks.com/`
-- **Never commit `.npmrc`** — it is in `.gitignore` intentionally
-- Vercel builds use the public npm registry automatically (no `.npmrc` in the repo)
-- If `.npmrc` is missing locally, recreate it: `echo 'registry=https://npm-proxy.dev.databricks.com/' > .npmrc`
+- Do **not** create a Databricks npm-proxy `.npmrc`.
+- `.npmrc` remains gitignored for local overrides only; it should normally be absent.
+- Vercel also installs from the public npm registry.
 
 Node is at `/opt/homebrew/bin/node` (not in default PATH). Always prefix commands:
 ```bash
 PATH="/opt/homebrew/bin:$PATH" npm install
-PATH="/opt/homebrew/bin:$PATH" npm run build
+ASTRO_TELEMETRY_DISABLED=1 PATH="/opt/homebrew/bin:$PATH" npm run build
 ```
 
-The Databricks proxy IS reachable from Claude Code's Bash tool sandbox, so Claude can run npm commands directly without the user needing to do it manually.
+Why `ASTRO_TELEMETRY_DISABLED=1`: in the Codex sandbox, Astro telemetry may try to write under `~/Library/Preferences/astro`, which is outside the workspace and fails with `EPERM`. Disabling telemetry keeps builds self-contained. The same flag is harmless on the user's machine.
+
+If `npm install` fails in Codex with `ENOTFOUND registry.npmjs.org`, rerun it with network escalation. If npm reports a broken `~/.npm` cache, use a local cache and delete it afterward:
+```bash
+PATH="/opt/homebrew/bin:$PATH" npm install --cache .npm-cache
+rm -rf .npm-cache
+```
 
 ---
 
@@ -38,7 +42,7 @@ Every push to `main` auto-deploys to Vercel. The full cycle:
 
 ```bash
 # make changes to files
-PATH="/opt/homebrew/bin:$PATH" npm run build   # verify build passes locally
+ASTRO_TELEMETRY_DISABLED=1 PATH="/opt/homebrew/bin:$PATH" npm run build
 git add <files>
 git commit -m "..."
 git push                                        # triggers Vercel deploy (~30s)
@@ -168,20 +172,35 @@ Successful runs **auto-commit and push** to `main` → Vercel deploys in ~30s. B
 
 ### Verify build
 ```bash
-PATH="/opt/homebrew/bin:$PATH" npm run build
+ASTRO_TELEMETRY_DISABLED=1 PATH="/opt/homebrew/bin:$PATH" npm run build
 ```
 
 ### Local dev server
 ```bash
-PATH="/opt/homebrew/bin:$PATH" npm run dev
+ASTRO_TELEMETRY_DISABLED=1 PATH="/opt/homebrew/bin:$PATH" npm run dev
 # opens at localhost:4321
 ```
 
 ### Install new packages
 ```bash
 PATH="/opt/homebrew/bin:$PATH" npm install <package>
-# uses Databricks proxy via local .npmrc
+# uses the default public npm registry unless the user has a local override
 ```
+
+### Add a downloaded paper to a literature review
+1. Inspect the PDF and compute its stable marker:
+```bash
+python3 -c "from pypdf import PdfReader; r=PdfReader('/path/to/paper.pdf'); print(len(r.pages)); print((r.pages[0].extract_text() or '')[:4000])"
+shasum -a 256 /path/to/paper.pdf
+```
+2. Copy the PDF into `inbox/papers/<filename>.pdf`. PDFs are gitignored, but the source path in the post should still point there.
+3. Pick the best existing `src/content/posts/lit-review-*.mdx` topic, or create a new topic if none fits.
+4. Add a `### <Paper Title>` subsection under `## Papers` with:
+```mdx
+{/* paper-file: <filename>.pdf paper-hash: <first-12-sha256> */}
+```
+5. Include `Authors`, `Year`, `Source`, `Contribution`, `Key ideas`, and `Connections` in the existing style.
+6. Update the post's `updated:` date and run the build command above.
 
 ### Check if a change is live
 ```bash
@@ -207,8 +226,8 @@ Tailwind's preflight CSS resets all form elements globally. The fix is `<style i
 
 ## Known Quirks
 
-1. **`package-lock.json` is gitignored** — it was generated with Databricks proxy URLs which break Vercel builds. Vercel runs a fresh `npm install` against the public registry on each deploy.
-2. **`.npmrc` is gitignored** — local file only, keeps the Databricks proxy setting. Never commit it.
+1. **`package-lock.json` is gitignored** — Vercel runs a fresh `npm install` against the public registry on each deploy.
+2. **`.npmrc` is gitignored** — local override only. Do not commit it, and do not recreate the old Databricks proxy config on this laptop.
 3. **`npm run build` includes `astro build` only** — Pagefind is not yet wired into the build script (planned for later when search is needed).
-4. **`git push` triggers two Databricks hooks** — a pre-commit secret scanner and a pre-push scanner. Both are fast and harmless.
+4. **Astro may rewrite `.astro/*` generated files during build/dev.** Keep the commit focused on source/content files unless a generated file change is intentional.
 5. **Vercel project type is Pages (static), not Workers** — if you ever need to recreate the Vercel project, choose "Pages → Connect to Git", NOT "Workers". Workers requires a deploy command and breaks.
