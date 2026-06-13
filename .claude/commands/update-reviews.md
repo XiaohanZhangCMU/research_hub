@@ -14,6 +14,8 @@ Be terse. Don't narrate; act. Print only the final summary at the end.
 - Rewrite the review around concepts, algorithms, math, empirical evidence, open problems, and references.
 - Merge the new paper's ideas into the existing field narrative.
 - Add every processed paper and important cited work to `## References`.
+- Make every reference title a Markdown hyperlink to the canonical paper page. Prefer arXiv abstract pages for arXiv papers; otherwise use DOI, OpenReview, ACL Anthology, official proceedings, publisher, conference, or author-hosted paper pages. Search for missing links before finalizing.
+- Add enough context and background for readers entering the field: motivating problem, prior baseline families, terminology, assumptions, evaluation conventions, and why the new work changes the field narrative.
 - Preserve machine-readable provenance with `paper-file` and `paper-hash` comments in reference entries.
 - Use KaTeX for math: `$...$` inline, `$$...$$` display.
 
@@ -66,7 +68,7 @@ reviewed: false
 
 Reference entries for processed inbox papers must include:
 ```mdx
-- <Authors>. "<Title>." <Venue or arXiv>, <Year>.
+- <Authors>. "[<Title>](<canonical-paper-url>)." <Venue or arXiv>, <Year>.
   {/* paper-file: <filename> paper-hash: <12char-hash> */}
 ```
 
