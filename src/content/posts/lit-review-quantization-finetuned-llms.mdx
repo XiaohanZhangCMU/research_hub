@@ -1,0 +1,223 @@
+---
+title: "Literature Review: Quantization of Fine-Tuned LLMs and Performance Degradation"
+description: "How post-training quantization and quantization-aware training affect fine-tuned LLMs — accuracy loss, task-specific regressions, perplexity spikes, and outlier activation sensitivity."
+date: 2025-06-18
+tags: ["literature-review", "quantization", "fine-tuning", "llm", "qlora", "gptq", "awq", "smoothquant"]
+series: "lit-review-quantization-finetuned-llms"
+draft: false
+generated: true
+reviewed: false
+---
+
+# Literature Review: Quantization of Fine-Tuned LLMs and Performance Degradation
+
+## Overview
+
+Quantizing a pretrained base LLM is now well understood: GPTQ, AWQ, and SmoothQuant can compress weights to four bits with single-digit perplexity penalties on the pretraining distribution. Quantizing a *fine-tuned* LLM is a different problem. The model in production is almost never the raw base checkpoint — it has been instruction-tuned, RLHF'd, domain-adapted, or LoRA-merged into a narrower distribution. The quantization step is then asked to preserve behavior on the very task the fine-tune was paid for, against a calibration set that frequently looks nothing like the deployment workload.
+
+This review collects what the literature actually says about that compound problem. Three observations frame the field. First, fine-tuned models are more, not less, sensitive to low-bit quantization than their base models — the regressions concentrate on the specialized task, not on the held-out language-modeling loss. Second, activation outliers, the dominant failure mode for weight-activation quantization, are reshaped by fine-tuning: SFT and RLHF can move, sharpen, or create new outlier channels that calibration on pretraining text never sees. Third, the most successful recipes treat quantization and fine-tuning as a joint design — QLoRA quantizes the base and adapts in higher precision, EfficientQAT and ZeroQAT push QAT into a regime where it can run after instruction tuning, and PEFT-aware PTQ tries to keep adapter merge points reconstructable.
+
+The headline trade-off recurs throughout: methods that look near-lossless on Wikitext perplexity for a base checkpoint can lose 5–20 points of task accuracy when applied to a fine-tuned variant of the same model, and the gap widens as bit-width drops below four.
+
+## Conceptual Map
+
+The space organizes along two axes: what gets quantized (weights only vs weights + activations vs weights + activations + KV cache) and when in the pipeline quantization happens (after fine-tuning, before fine-tuning, jointly with fine-tuning).
+
+- **Weight-only PTQ on a fine-tuned model.** GPTQ, AWQ, SqueezeLLM, OWQ, SpQR, AQLM, and QuIP# all assume an already-trained checkpoint and reduce weights to 3–4 bits with calibration data. Applied to fine-tuned checkpoints, they preserve the pretrained skills better than the fine-tuned ones unless the calibration set is task-matched.
+- **Weight-activation PTQ on a fine-tuned model.** SmoothQuant, OmniQuant, and Outlier Suppression++ push to W8A8 or W4A4. The outlier story is much harsher here because activation statistics after RLHF or domain SFT are not what the original pretraining-corpus heuristics assumed.
+- **PEFT-aware quantization.** QLoRA freezes the base in NF4 and trains LoRA adapters in BF16, deliberately keeping the high-precision capacity exactly where the model is being moved. QA-LoRA, LoftQ, and LQ-LoRA extend the idea by initializing adapters to compensate for quantization error.
+- **QAT for fine-tuned LLMs.** LLM-QAT distills the FP teacher into a quantized student using teacher-generated data — a procedure that is, structurally, a quantization-respecting re-fine-tune. EfficientQAT and ZeroQAT make the same loop cheap enough to run at 7B–70B scale.
+
+The unifying theme: quantization error is a function of the *current* weight and activation distribution, and fine-tuning changes that distribution in ways that pretraining-era calibration heuristics do not capture.
+
+## Mathematical Setup
+
+The uniform affine quantizer underlies almost every method:
+
+$$
+X_{\mathrm{int}} =
+\mathrm{clip}\!\left(
+\left\lfloor \frac{X}{s} \right\rceil + z,\;
+q_{\min},\, q_{\max}
+\right),
+\qquad
+\widehat{X} = s\,(X_{\mathrm{int}} - z).
+$$
+
+The scale $s$ and zero-point $z$ are chosen per-tensor, per-channel, per-group, or per-token. For a fine-tuned model the choice interacts with the post-fine-tune distribution: per-channel weight scales fit fine-tuned weights well, but per-tensor activation scales fail catastrophically once outliers concentrate in a small number of channels.
+
+A LoRA-adapted model with rank $r \ll d$ writes its effective weight as
+
+$$
+W_{\mathrm{eff}} = W_{\mathrm{base}} + \alpha\, B A,
+\qquad B \in \mathbb{R}^{d \times r},\; A \in \mathbb{R}^{r \times d}.
+$$
+
+QLoRA replaces this with a quantized base and high-precision adapters:
+
+$$
+W_{\mathrm{eff}} \;=\; Q_{\mathrm{NF4}}(W_{\mathrm{base}}) \;+\; \alpha\, B A,
+$$
+
+where $Q_{\mathrm{NF4}}$ is NormalFloat-4 quantization, $B$ and $A$ remain in BF16, and the gradient flows only into $B, A$. The model never updates $W_{\mathrm{base}}$, so the quantization error there is *fixed once* at the start of fine-tuning, and the adapters learn to compensate for it.
+
+GPTQ's per-layer objective is the Hessian-weighted reconstruction loss
+
+$$
+\min_{\widehat{W}} \; \big\| W X - \widehat{W} X \big\|_F^2,
+$$
+
+solved column by column with a Cholesky factor of $H = 2 X X^\top + \lambda I$. The activation matrix $X$ is the bottleneck: for fine-tuned models $X$ depends on the calibration prompts, and the wrong calibration set gives the wrong $H$.
+
+AWQ formalizes the salient-channel idea as
+
+$$
+\min_{s} \;\big\| W X - Q\!\left(W \cdot \mathrm{diag}(s)\right)\, \mathrm{diag}(s)^{-1} X \big\|_F^2,
+$$
+
+where $s_j \propto \mathrm{mean}(|X_j|)^\alpha$. The exponent $\alpha$ is grid-searched; salient channels (large activation magnitude) get larger pre-scales so that, after quantization, their effective precision is higher. On a fine-tuned model, $\mathrm{mean}(|X_j|)$ depends on the calibration set; AWQ inherits GPTQ's calibration-shift problem.
+
+SmoothQuant migrates activation outliers into weights via a per-channel rescaling
+
+$$
+Y = (X \cdot \mathrm{diag}(s)^{-1})\,(\mathrm{diag}(s)\, W),
+\qquad
+s_j = \frac{\max(|X_j|)^\alpha}{\max(|W_j|)^{1-\alpha}}.
+$$
+
+The exponent $\alpha \in [0, 1]$ controls how much of the dynamic range is moved from activations to weights; the optimum, typically $\alpha \approx 0.5$ on base models, shifts for fine-tuned models whose $\max(|X_j|)$ profile has changed.
+
+A useful empirical degradation model fits perplexity as a function of bit-width $b$:
+
+$$
+\mathrm{PPL}(b) \;\approx\; \mathrm{PPL}(\infty) + C \cdot 2^{-2(b - b_0)},
+$$
+
+with a roughly geometric tail in $b$ above some threshold $b_0 \in [3, 4]$, and a much steeper rise below it. The constant $C$ is larger for fine-tuned than for base models when measured on the fine-tuning distribution.
+
+## Algorithms and Design Patterns
+
+### GPTQ — second-order weight-only PTQ
+
+GPTQ (Frantar et al., 2023) solves the per-layer reconstruction problem with a single pass through weight columns, using a Cholesky-factored inverse Hessian to compute the optimal compensation for each quantized column. Applied to a fine-tuned model it has two interacting failure modes. The Hessian is estimated from calibration activations, so a calibration set drawn from the pretraining distribution (e.g., C4) gives an $H$ that under-weights the directions a fine-tuned model actually uses. And the column-greedy update assumes that residual error redistributes well across remaining columns; for fine-tuned matrices with sharper singular spectra, that assumption is weaker, and 3-bit GPTQ can lose noticeable points on the target task even when Wikitext perplexity moves only by 0.5–1.0.
+
+### AWQ — activation-aware salient channel preservation
+
+AWQ (Lin et al., 2023) starts from the observation that protecting roughly 1% of weight channels — the ones aligned with large-magnitude activation channels — recovers most of the quality lost in naive RTN. Rather than mixing precisions, AWQ rescales: it multiplies salient channels by $s_j > 1$ before quantization, and divides the corresponding activations by $s_j$ at runtime. Two design points matter for fine-tuned models. AWQ does not require backprop or per-layer reconstruction, so it is cheap to re-run on each new fine-tuned checkpoint. And its salient-channel mask is data-driven; refreshing the mask on a task-matched calibration set is the simplest, most effective adaptation to fine-tuning shift. Egashira et al. note that activation outliers can be deliberately manipulated by adversarial fine-tuning to subvert AWQ's scaling — a security observation that doubles as a robustness one for benign fine-tunes.
+
+### SmoothQuant — outlier migration
+
+SmoothQuant (Xiao et al., 2023) makes W8A8 feasible by reshaping where the hard-to-quantize values live. Activation outliers — channels with magnitudes 50–100× larger than the rest — are absorbed into the weight matrix via the per-channel scaling $s_j$ above. The resulting activations are smoother and tolerate per-tensor INT8 quantization. Fine-tuning changes which channels are outliers. RLHF in particular has been observed to introduce new outlier channels in MLP up-projections; SmoothQuant on a post-RLHF checkpoint with calibration drawn from pretraining text systematically mis-scales those channels.
+
+### QLoRA — quantize the base, adapt in higher precision
+
+QLoRA (Dettmers et al., 2023) is the dominant pattern for fine-tuning under memory pressure and, indirectly, the cleanest answer to the compounding-error problem. The base model is quantized once into NF4 — a non-uniform 4-bit code calibrated to the empirical normal distribution of LLM weights — using double quantization for the quantization constants themselves. LoRA adapters in BF16 train on top. Three properties matter:
+
+1. The quantization error in $W_{\mathrm{base}}$ is fixed at the start of training, so adapters learn the model that includes that error. There is no second quantization step at deployment.
+2. The adapters carry the fine-tuning capacity in full precision. NF4 base + BF16 LoRA matches BF16 full fine-tuning on instruction-following benchmarks within 1–2 points across model sizes from 7B to 65B.
+3. The merged checkpoint, if one is produced for inference, must be re-quantized — and at that point most of QLoRA's protection is lost. In production QLoRA is usually served as quantized base + dequantized-on-the-fly adapter, not as a merged INT4 model.
+
+LoftQ and LQ-LoRA refine the initialization: instead of starting LoRA at zero, they choose $B, A$ to minimize $\|W_{\mathrm{base}} - Q(W_{\mathrm{base}}) - BA\|_F$, so that the very first training step already partially compensates for quantization error. QA-LoRA goes further and aligns the LoRA structure with the quantization group structure so that the merged result is quantization-friendly.
+
+### LLM-QAT — data-free QAT with KV-cache quantization
+
+LLM-QAT (Liu et al., 2024) addresses the elephant in the QAT room: you usually do not have the pretraining or fine-tuning corpus. It generates training data by sampling from the full-precision teacher, then distills into a quantized student that simulates weight, activation, and KV-cache quantization in the forward pass. The KV-cache piece is critical for long-context fine-tuned models — without it, W4A4 quantization can be near-lossless on short prompts and fail catastrophically at 8k–32k context. LLM-QAT shows that 4-bit KV-cache models are achievable but only with QAT-style end-to-end alignment; PTQ on KV cache alone tends to lose multiple perplexity points on long-context evals.
+
+### Other notable methods
+
+- **AQLM** (Egiazarian et al., 2024) uses additive vector quantization with learned codebooks to push weights below three bits per parameter while keeping competitive perplexity. Sub-3-bit AQLM on fine-tuned models works, but only when the codebook is re-fit on the fine-tuned weights.
+- **QuIP#** (Tseng et al., 2024) couples incoherence-processing transforms with lattice codebooks to make 2-bit quantization viable. It is one of the few methods where fine-tuned-model results are reported alongside base-model results; the gap widens at 2 bits.
+- **SqueezeLLM** (Kim et al., 2023) keeps a dense + sparse decomposition where the sparse part captures outlier weights. The split is recomputed per checkpoint, which makes it naturally robust to fine-tuning.
+- **OmniQuant** (Shao et al., 2023) makes the per-layer scales learnable rather than search-based, closing some of the gap with QAT at PTQ cost. Block-wise training in OmniQuant is sensitive to the calibration distribution in the same way GPTQ is.
+- **EfficientQAT** (Chen et al., 2024) splits QAT into block-wise all-parameter reconstruction followed by end-to-end quantization-parameter tuning, making it tractable on a single fine-tuned 70B.
+- **ZeroQAT** (anon., 2024) replaces backprop with zeroth-order finite-difference estimates so that the QAT loop does not store activation gradients — useful for fine-tuned models served in memory-constrained environments.
+- **SpQR** (Dettmers et al., 2023) keeps a small fraction of outlier weights at higher precision while quantizing the rest aggressively, trading a small sparsity overhead for near-lossless behavior.
+- **OWQ** (Lee et al., 2024) extends this with a more careful outlier criterion based on Hessian sensitivity.
+
+## Performance Degradation Patterns
+
+### Accuracy loss by bit-width
+
+A consistent picture emerges across GPTQ, AWQ, OmniQuant, and QuIP# papers when results are stratified by fine-tune status. At W8 (per-channel weights, per-token activations), losses are essentially below measurement noise for both base and fine-tuned models. At W4A16 (weight-only 4-bit, activations untouched), base models lose 0.1–0.5 perplexity on Wikitext and 0–2 points on MMLU; fine-tuned models show similar perplexity numbers but 1–5 points on the target task (e.g., HumanEval for a code fine-tune, GSM8K for a math fine-tune). At W4A8 the activation quantization starts to matter, and the gap widens. At W4A4, base models can still hold within 5–8 perplexity points with SmoothQuant + OmniQuant; fine-tuned models without further training often lose 10–25 points on their target task. Below four bits, only QAT-style methods (LLM-QAT, EfficientQAT) and structured codebook methods (AQLM, QuIP#) hold up at all, and even then, fine-tuned-model results are reported less often and look noticeably worse than base-model numbers.
+
+### Task-specific regressions
+
+The most under-reported finding in PTQ papers is that "1.2 perplexity points on Wikitext" frequently translates to much larger movements on specialized benchmarks. A 4-bit code-fine-tuned model can lose 8–15 percentage points on HumanEval pass@1 while showing a 1-point movement on Wikitext. A math fine-tuned model can lose half its GSM8K accuracy at W4A4 with PTQ but show only a small Wikitext shift. The mechanism is straightforward: fine-tuning concentrates capacity in the directions the task needs, and quantization noise is approximately isotropic in the weight space, so it has disproportionate effect on the small number of singular directions that carry the task-specific information.
+
+This pattern argues for task-matched calibration and task-matched evaluation. Calibration on C4 + evaluation on Wikitext is the worst case: it under-reports the regression on the actually-deployed workload.
+
+### Perplexity spikes at W4A4 and below
+
+At W4A4 the system is squeezed from two sides. Activations cannot tolerate the same quantization scheme as weights because their distribution is heavier-tailed, and KV-cache rounding error compounds across attention steps. Without outlier-aware schemes (SmoothQuant, OmniQuant), W4A4 perplexity often jumps by a factor of 2–10 even on base models. On fine-tuned models the spike is steeper and more variable: some checkpoints survive W4A4 cleanly, others lose double-digit perplexity, depending on how the fine-tune affected activation statistics. The variance itself is a problem — production teams cannot tell in advance which checkpoints will fall off the cliff without empirical evaluation.
+
+### Outlier activation sensitivity
+
+The "0.1% of channels carry 100× activation magnitude" finding (Bondarenko et al., Dettmers et al.) is the foundational fact for weight-activation quantization. Three observations specific to fine-tuned models extend it:
+
+1. **RLHF appears to amplify outliers.** Several measurement studies and anecdotal reports describe RLHF'd checkpoints with more extreme outlier channels than their SFT precursors. SmoothQuant calibrated on pretraining text mis-scales these.
+2. **LoRA-merged models can have *moved* outliers.** The merge $W = W_{\mathrm{base}} + BA$ shifts singular directions, which can in turn shift which input channels see large activations.
+3. **Outlier channels are sometimes task-meaningful, not artifacts.** Removing or harshly quantizing them does not just degrade general behavior, it removes the directions the fine-tune installed.
+
+### Fine-tuning distribution shift × quantization error
+
+Quantization error is statistically structured: under round-to-nearest with per-channel scales, the error in weight $w_{ij}$ is approximately uniform on $[-s/2, s/2]$, with $s$ determined by the channel's dynamic range. Fine-tuning shifts both the weight distribution (mean and scale of each channel) and the activation distribution. A scale chosen for the base model is suboptimal for the fine-tuned weights; this is why methods that recompute scales per checkpoint (AWQ, SqueezeLLM, OmniQuant) tend to weather fine-tuning shift better than methods that reuse base-model statistics.
+
+The compounding effect is empirically visible: at W4A4, quantizing the base then fine-tuning in low precision is worse than fine-tuning in BF16 then quantizing, which is worse than QLoRA-style joint design. QLoRA's gap over post-hoc PTQ on fine-tuned models grows with smaller bit-widths and with larger fine-tuning datasets.
+
+### KV-cache quantization and long-context fine-tunes
+
+Many production fine-tunes extend context length (32k → 128k) or specialize on long-context tasks. KV-cache quantization is then no longer optional: BF16 KV cache for a 70B at 128k context is tens of gigabytes per request. INT8 KV cache is mostly safe across the literature; INT4 KV cache without QAT degrades by several perplexity points on long-context benchmarks. LLM-QAT-style QAT including KV-cache quantization is the only reported recipe that holds 4-bit KV cache without large regressions. For fine-tuned models, the long-context regression compounds with the task-specific regression discussed above — long-document QA fine-tunes are among the hardest cases.
+
+## Fine-Tuned vs Base Model Trade-offs
+
+Why fine-tuned models are *more* vulnerable to quantization is the question that organizes this review. Several causes are in play:
+
+- **Concentrated capacity.** Fine-tuning, especially LoRA or SFT on a narrow task, concentrates the task-relevant signal in a small number of singular directions. Isotropic quantization noise hits those directions just as hard as the irrelevant ones, but the marginal damage to task accuracy is much larger because there is less redundancy.
+- **Distribution drift relative to calibration.** PTQ calibration sets are typically pretraining-era (C4, RedPajama, Wikitext). A fine-tuned model deployed on medical Q&A or code completion has a different activation distribution; calibration scales chosen on C4 are biased for the wrong workload.
+- **Outlier relocation.** Fine-tuning can move outlier channels, especially in MLP layers. Smoothing/scaling parameters fit to base-model statistics misalign with the new outliers.
+- **Compounded error.** Fine-tuning error + quantization error are not independent in their effect on a specialized task; both reduce effective precision in the same task-aligned directions.
+
+QLoRA is the cleanest mitigation: by quantizing the base *before* adapting, it forces the adapter to learn around the quantization error rather than to fight it. The same idea is generalized in LoftQ (better initialization) and QA-LoRA (group-aligned LoRA). The pattern is "design the quantization point into the fine-tune," and it consistently outperforms "fine-tune in FP, then PTQ to INT4" on instruction benchmarks at matched compute.
+
+For checkpoints that already exist in FP and cannot be re-fine-tuned, the practical recipe in the literature is:
+
+1. Re-calibrate AWQ or GPTQ on a task-matched calibration set, not on C4.
+2. Use weight-only quantization at 4 bits where possible; reserve W4A4 for cases where activation quantization is hardware-mandated.
+3. If W4A4 is required, use SmoothQuant or OmniQuant with per-token activation scales and recompute the scaling parameters on task-matched calibration.
+4. For long-context fine-tunes, keep KV cache at 8 bits unless QAT is available.
+5. Evaluate on the actual task, not on Wikitext perplexity, before declaring a quantized fine-tune deployable.
+
+EfficientQAT and ZeroQAT are increasingly used when the FP fine-tune already exists but a quantization-respecting re-training is affordable. LLM-QAT remains the strongest baseline when the original training data is unavailable.
+
+## Open Problems
+
+Several questions are not settled in the current literature.
+
+- **Calibration set design for fine-tuned models.** Beyond "match the task," there is no principled procedure for choosing calibration prompts. Sensitivity to calibration set size, diversity, and prompt format is large and under-reported.
+- **Predicting which fine-tunes will quantize well.** No published method reliably predicts the W4A4 regression of a given fine-tuned checkpoint from the FP weights alone. Empirical evaluation is the only reliable signal.
+- **Joint quantization + RLHF.** QLoRA-style joint design exists for SFT; the equivalent for full RLHF pipelines (PPO, DPO, GRPO) is less well studied. Outlier amplification under RLHF is the main open question.
+- **Sub-3-bit fine-tuned LLMs.** AQLM and QuIP# show that 2-bit base models are viable; matching results for instruction-tuned and RLHF'd models are sparse and inconsistent.
+- **KV-cache QAT at production scale.** LLM-QAT works at 7B–13B. Whether the same recipe scales to 70B+ with full long-context fine-tunes, without becoming as expensive as the original fine-tune itself, is open.
+- **Adversarial fine-tuning of quantization.** Egashira et al. showed that an adversary can fine-tune a model so that its FP behavior is benign but its INT4 behavior is malicious, by manipulating activation outliers. The benign analogue — quantization-robust fine-tuning — is barely studied.
+- **Reporting conventions.** Most PTQ papers report base-model perplexity. Fine-tuned-model task accuracy at the deployed bit-width is the metric that matters in practice and remains the least reported.
+
+## References
+
+- Bondarenko, Y., Nagel, M., Blankevoort, T. "Understanding and Overcoming the Challenges of Efficient Transformer Quantization." EMNLP, 2021.
+- Chen, M., Shao, W., Xu, P., et al. "EfficientQAT: Efficient Quantization-Aware Training for Large Language Models." arXiv:2407.11062, 2024.
+- Dettmers, T., Pagnoni, A., Holtzman, A., Zettlemoyer, L. "QLoRA: Efficient Finetuning of Quantized LLMs." NeurIPS, 2023.
+- Dettmers, T., Svirschevski, R., Egiazarian, V., et al. "SpQR: A Sparse-Quantized Representation for Near-Lossless LLM Weight Compression." arXiv:2306.03078, 2023.
+- Egashira, K., Vero, M., Staab, R., He, J., Vechev, M. "Exploiting LLM Quantization." NeurIPS, 2024.
+- Egiazarian, V., Panferov, A., Kuznedelev, D., et al. "Extreme Compression of Large Language Models via Additive Quantization (AQLM)." ICML, 2024.
+- Frantar, E., Ashkboos, S., Hoefler, T., Alistarh, D. "GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers." ICLR, 2023.
+- Kim, S., Hooper, C., Gholami, A., et al. "SqueezeLLM: Dense-and-Sparse Quantization." ICML, 2024.
+- Lee, C., Jin, J., Kim, T., Kim, H., Park, E. "OWQ: Outlier-Aware Weight Quantization for Efficient Fine-Tuning and Inference of Large Language Models." AAAI, 2024.
+- Li, Y., Yu, Y., Liang, C., et al. "LoftQ: LoRA-Fine-Tuning-Aware Quantization for Large Language Models." ICLR, 2024.
+- Lin, J., Tang, J., Tang, H., et al. "AWQ: Activation-Aware Weight Quantization for LLM Compression and Acceleration." arXiv:2306.00978, 2023.
+- Liu, Z., Oguz, B., Zhao, C., et al. "LLM-QAT: Data-Free Quantization Aware Training for Large Language Models." arXiv:2305.17888 (revised 2024, arXiv:2405.06091).
+- Shao, W., Chen, M., Zhang, Z., et al. "OmniQuant: Omnidirectionally Calibrated Quantization for Large Language Models." ICLR, 2024.
+- Tseng, A., Chee, J., Sun, Q., Kuleshov, V., De Sa, C. "QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks." ICML, 2024.
+- Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., Han, S. "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models." ICML, 2023.
+- Xu, Y., Xie, L., Gu, X., et al. "QA-LoRA: Quantization-Aware Low-Rank Adaptation of Large Language Models." ICLR, 2024.
+- Yao, Z., Aminabadi, R. Y., Zhang, M., Wu, X., Li, C., He, Y. "ZeroQuant: Efficient and Affordable Post-Training Quantization for Large-Scale Transformers." NeurIPS, 2022.
+- ZeroQAT: "Zeroth-Order Quantization-Aware Training for Large Language Models" (preprint, 2024).
