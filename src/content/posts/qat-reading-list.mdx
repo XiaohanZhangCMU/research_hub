@@ -1,0 +1,85 @@
+---
+title: "QAT Reading List: From Fake-Quant CNNs to 1-Bit LLMs"
+description: "A curated tour through six papers that shaped Quantization-Aware Training — from Jacob 2018 and LSQ on CNNs to LLM-QAT, BitNet, BitNet b1.58, and EfficientQAT on modern LLMs."
+date: 2026-06-13
+tags: ["literature-review", "qat", "quantization", "llm", "bitnet", "efficient-inference"]
+series: "qat-reading-list"
+draft: false
+generated: true
+reviewed: false
+---
+
+# QAT Reading List: From Fake-Quant CNNs to 1-Bit LLMs
+
+Quantization-Aware Training (QAT) bakes the rounding and clipping noise of low-precision inference into the training loop, so the network learns weights that survive being squeezed down to INT8, INT4, ternary, or even 1-bit representations. The six papers below trace the arc from the foundational CNN-era work to the recent wave of LLM-scale QAT.
+
+---
+
+## 1. Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference
+
+- **Authors:** Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu, Matthew Tang, Andrew Howard, Hartwig Adam, Dmitry Kalenichenko (Google)
+- **Year / Venue:** CVPR 2018 — [arXiv:1712.05877](https://arxiv.org/abs/1712.05877)
+
+The paper that defined the modern QAT recipe used in TensorFlow Lite and friends. The authors propose an integer-only inference scheme — every weight and activation is represented as an 8-bit integer with a 32-bit accumulator — paired with a "simulated quantization" training procedure that injects fake-quant nodes into the forward pass so the model learns to be robust to rounding error. Quantizing both weights and activations to INT8 yields close to a 4× memory reduction over FP32 while improving the latency/accuracy trade-off on MobileNets for ImageNet classification and COCO detection on ARM CPUs. This is the canonical reference for "fake-quant" QAT.
+
+---
+
+## 2. Learned Step Size Quantization (LSQ)
+
+- **Authors:** Steven K. Esser, Jeffrey L. McKinstry, Deepika Bablani, Rathinakumar Appuswamy, Dharmendra S. Modha (IBM Research)
+- **Year / Venue:** ICLR 2020 — [arXiv:1902.08153](https://arxiv.org/abs/1902.08153)
+
+LSQ makes the quantizer's step size itself a learnable parameter, trained by backprop alongside the weights. The key trick is a carefully derived gradient estimator (with a scaling factor on the step-size learning rate) that lets a single scalar per layer absorb the rounding/clipping decisions. At the time of publication it set the best-known ImageNet accuracy for 2-, 3-, and 4-bit networks across multiple architectures, and 3-bit models even matched their full-precision baselines. LSQ (and its successor LSQ+ with learnable offsets) remains the default backbone for most low-bit QAT pipelines today, including several of the LLM works below.
+
+---
+
+## 3. LLM-QAT: Data-Free Quantization Aware Training for Large Language Models
+
+- **Authors:** Zechun Liu, Barlas Oğuz, Changsheng Zhao, Ernie Chang, Pierre Stock, Yashar Mehdad, Yangyang Shi, Raghuraman Krishnamoorthi, Vikas Chandra (Meta Reality Labs)
+- **Year / Venue:** Findings of ACL 2024 — [arXiv:2305.17888](https://arxiv.org/abs/2305.17888) · [code](https://github.com/facebookresearch/LLM-QAT)
+
+The first systematic QAT study on LLMs. The authors observe that post-training quantization (PTQ) methods hold up at 8 bits but collapse below that, so they revive QAT for LLaMA-class models. To sidestep the impossibility of replaying the original pretraining corpus, they propose a **data-free** distillation pipeline: the full-precision model auto-regressively generates its own training data (sampled from top-k next-token candidates), and a quantized student is trained to match the teacher's logit distribution. Crucially they also quantize the **KV cache**, not just weights and activations. Across LLaMA 7B/13B/30B at W4A8 (and even W4A4-KV4), LLM-QAT substantially beats training-free PTQ baselines, opening QAT as a viable path for sub-8-bit LLMs.
+
+---
+
+## 4. BitNet: Scaling 1-bit Transformers for Large Language Models
+
+- **Authors:** Hongyu Wang, Shuming Ma, Li Dong, Shaohan Huang, Huaijie Wang, Lingxiao Ma, Fan Yang, Ruiping Wang, Yi Wu, Furu Wei (Microsoft Research / UCAS / Tsinghua)
+- **Year / Venue:** arXiv preprint, Oct 2023 — [arXiv:2310.11453](https://arxiv.org/abs/2310.11453)
+
+Rather than quantize a pretrained FP16 model, BitNet trains transformers with 1-bit weights **from scratch**. The core contribution is `BitLinear`, a drop-in replacement for `nn.Linear` that binarizes weights during the forward pass while keeping a latent high-precision shadow copy for gradient updates (a QAT setup with straight-through estimators and carefully tuned LayerNorm/scaling for stability). On language-modeling benchmarks, BitNet is competitive with FP16 baselines and beats state-of-the-art 8-bit PTQ methods while massively cutting memory and energy. The paper also shows that BitNet follows a scaling law similar to full-precision transformers, foreshadowing the 1-bit LLM era.
+
+---
+
+## 5. The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits (BitNet b1.58)
+
+- **Authors:** Shuming Ma, Hongyu Wang, Lingxiao Ma, Lei Wang, Wenhui Wang, Shaohan Huang, Li Dong, Ruiping Wang, Jilong Xue, Furu Wei (Microsoft Research / UCAS)
+- **Year / Venue:** arXiv preprint, Feb 2024 — [arXiv:2402.17764](https://arxiv.org/abs/2402.17764)
+
+The follow-up that pushed BitNet from binary &#123;-1, +1&#125; weights to **ternary &#123;-1, 0, +1&#125;** — 1.58 bits per weight in the entropy sense (log₂ 3 ≈ 1.58). With the extra "0" state acting like an implicit feature filter, BitNet b1.58 matches the perplexity and downstream task accuracy of FP16 LLaMA at the same model size and token count, while delivering large wins in latency, memory, throughput, and energy. The paper argues this defines a new scaling law and inference recipe, and motivates dedicated 1-bit hardware. A subsequent 2B-parameter / 4T-token open-weights release ([arXiv:2504.12285](https://arxiv.org/abs/2504.12285)) gave the community a working native-1-bit LLM to play with.
+
+---
+
+## 6. EfficientQAT: Efficient Quantization-Aware Training for Large Language Models
+
+- **Authors:** Mengzhao Chen, Wenqi Shao, Peng Xu, Jiahao Wang, Peng Gao, Kaipeng Zhang, Yu Qiao, Ping Luo (OpenGVLab / HKU)
+- **Year / Venue:** ACL 2025 Main — [arXiv:2407.11062](https://arxiv.org/abs/2407.11062) · [code](https://github.com/OpenGVLab/EfficientQAT)
+
+EfficientQAT tackles the elephant in the room: full QAT on a 70B model is prohibitively expensive. It splits the procedure into two phases — **Block-AP**, which jointly trains all parameters of one transformer block at a time (the first method to train *all* parameters block-wise), followed by **E2E-QP**, which freezes the quantized backbone and only fine-tunes the per-layer step sizes end-to-end. The result is dramatic: a 2-bit Llama-2-70B is produced on **a single A100-80GB in 41 hours** with under 3 points of accuracy degradation versus FP16 (69.48 vs 72.41), and that 2-bit 70B model even outperforms FP16 Llama-2-13B while using less memory (19.2 GB vs 24.2 GB). EfficientQAT now sets a strong reference point for sub-4-bit LLM QAT.
+
+---
+
+## Quick Taxonomy
+
+| Paper | Year | Target precision | Scope |
+|---|---|---|---|
+| Jacob et al. | 2018 | INT8 W+A | CNNs, foundational fake-quant QAT |
+| LSQ | 2020 | 2–8 bit W+A | Learnable step size, ImageNet CNNs |
+| LLM-QAT | 2024 | 4-bit W+A+KV | First QAT for LLMs, data-free distillation |
+| BitNet | 2023 | 1-bit W | Train-from-scratch 1-bit transformers |
+| BitNet b1.58 | 2024 | Ternary W (≈1.58-bit) | Matches FP16 LLM perplexity |
+| EfficientQAT | 2024 | 2/3/4-bit W | Block-wise QAT, 70B on one GPU |
+
+## Suggested Reading Order
+
+If you're onboarding to QAT from scratch: read **Jacob 2018** for the mental model of fake-quant training, then **LSQ** for the standard learnable-step machinery. Jump to **LLM-QAT** to see how those ideas transfer to generative LLMs, then **BitNet → BitNet b1.58** for the train-from-scratch ultra-low-bit line, and finish with **EfficientQAT** for the current state of the art in practical, single-GPU LLM QAT.
