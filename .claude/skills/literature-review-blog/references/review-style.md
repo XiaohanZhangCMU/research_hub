@@ -10,8 +10,9 @@ Each literature review should read like a living survey chapter: compact enough 
 - Build a concept graph: nodes are ideas, algorithms, metrics, datasets, failure modes, and papers; edges are "extends", "criticizes", "solves", "assumes", "evaluates", or "breaks under".
 - Decide whether the new paper adds a new node, changes an edge, or forces a new top-level section.
 - Rewrite section introductions so the new paper is part of the explanation, not an addendum.
+- Add background paragraphs where the review would otherwise assume too much: define the field's motivating workload or scientific problem, summarize the pre-existing baseline family, and explain terms, benchmarks, or deployment constraints before comparing papers.
 - Add equations or pseudocode where the paper's contribution is mathematical or algorithmic.
-- Add newly important cited works to `## References`, even if their PDFs are not in `inbox/papers`.
+- Add newly important cited works to `## References`, even if their PDFs are not in `inbox/papers`, and make every reference title a hyperlink to the canonical paper page.
 
 ## Section Patterns
 
@@ -24,6 +25,8 @@ Example shape:
 ```mdx
 Quantization asks how far we can reduce numeric precision before the model's computation stops approximating the full-precision network. In LLMs the bottleneck is not only arithmetic; it is memory bandwidth, activation outliers, KV-cache growth, and the mismatch between local calibration losses and end-task behavior.
 ```
+
+The overview should give readers the missing background they would otherwise need from a textbook, survey, or earlier review: what the task is, why common baselines are insufficient, which constraints matter in practice, and which vocabulary will recur in later sections.
 
 ### Conceptual Map
 
@@ -84,9 +87,9 @@ Use a compact bibliography. Mark processed inbox papers with `paper-file` and `p
 ```mdx
 ## References
 
-- Zechun Liu et al. "LLM-QAT: Data-Free Quantization Aware Training for Large Language Models." Findings of ACL, 2024.
+- Zechun Liu et al. "[LLM-QAT: Data-Free Quantization Aware Training for Large Language Models](https://aclanthology.org/2024.findings-acl.26/)." Findings of ACL, 2024.
   {/* paper-file: 2024.findings-acl.26.pdf paper-hash: aad88e777fd4 */}
-- Guangxuan Xiao et al. "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models." ICML, 2023.
+- Guangxuan Xiao et al. "[SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models](https://arxiv.org/abs/2211.10438)." ICML, 2023.
 ```
 
-If a reference has an arXiv ID, include it when known. Do not invent venue metadata.
+If a reference has an arXiv ID, link to the arXiv abstract page when that is the most stable source. Otherwise link to the DOI landing page, OpenReview page, ACL Anthology page, ACM/IEEE/Springer proceedings page, official conference page, or author-hosted paper page. Search when the link is unknown. Do not invent venue metadata, and do not leave a reference title unlinked unless no canonical paper page can be found after a reasonable search.
